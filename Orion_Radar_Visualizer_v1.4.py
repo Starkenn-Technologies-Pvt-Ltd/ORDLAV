@@ -77,8 +77,8 @@ class RadarPlotWidget(QWidget):
         self.setStyleSheet("background-color: black;")
 
         # Radar parameters (meters)
-        self.min_x, self.max_x = -20, 20
-        self.min_y, self.max_y = 0, 30
+        self.min_x, self.max_x = -50, 50
+        self.min_y, self.max_y = 0, 150
         self.grid_step = 3
 
         # Object pools for widget reuse (MAJOR OPTIMIZATION)
@@ -89,7 +89,7 @@ class RadarPlotWidget(QWidget):
         self.text_pool = []  # Pool for text labels
 
         # Pool sizes
-        self.max_points = 200
+        self.max_points = 100
         self.max_tracks = 32
         self.max_static = 1
         self.max_dynamic = 1
@@ -499,7 +499,7 @@ class RadarVisualizerMainWindow(QMainWindow):
             }
         """)
         self.ego_speed_label.adjustSize()
-        self.ego_speed_label.move(self.width() - 500, 10)  # Top left corner
+        self.ego_speed_label.move(10, 10)  # Top left corner
 
         # Create timestamp label (bottom left corner)
         self.timestamp_label = QLabel("Timestamp: N/A", self)
@@ -537,7 +537,7 @@ class RadarVisualizerMainWindow(QMainWindow):
             # Update ego speed display
             ego_speed = json_data.get('ego_speed', 'N/A')
             speed_value = float(ego_speed['ego_speed'])
-            print(speed_value)
+            #print(speed_value)
             if speed_value >= 0:
                 try:
                     # Convert to float and format

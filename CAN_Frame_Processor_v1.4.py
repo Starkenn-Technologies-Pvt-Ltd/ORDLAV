@@ -19,20 +19,27 @@ from typing import List, Dict, Any, Optional
 import socket
 import json
 
+import sys
+if sys.platform.startswith("win"):
+    sys.stdout.reconfigure(encoding="utf-8")
 # CAN Configuration Constants
 # TODO: Update these values for your specific system
 #OR_MRR_DATA_HEADER = 0x123 # Replace with your actual CAN ID for frame header
 OR_MRR_DATA_HEADER = 0xC1
 OR_MRR_POINT_CLOUD = 0xD1
 OR_MRR_TRACKERS = 0xD3
+OR_MRR_PADDING = 0xE1
 OR_FCWS_MOVING_OBJ = 0x510
 OR_FCWS_STATIC_OBJ = 0x590
-
+OR_ALARM_STATUS = 0xA1
 OR_FCWS_THRESH = 0x6F1
 VEH_SPEED = 0x3F5
 OR_ECU_ALARM = 0x1
+HIL_100 =0x100
+HIL_101 =0x101
+HIL_102 =0x102
 
-can_ids_to_filter = [OR_MRR_DATA_HEADER, OR_MRR_POINT_CLOUD, OR_MRR_TRACKERS, OR_FCWS_STATIC_OBJ, OR_FCWS_MOVING_OBJ, OR_FCWS_THRESH, VEH_SPEED, OR_ECU_ALARM]
+can_ids_to_filter = [OR_MRR_DATA_HEADER, OR_MRR_POINT_CLOUD, OR_MRR_TRACKERS, OR_FCWS_STATIC_OBJ, OR_FCWS_MOVING_OBJ, OR_ALARM_STATUS, OR_FCWS_THRESH, VEH_SPEED, OR_ECU_ALARM, HIL_100, HIL_101]
 
 FRAME_START_DATA = "02 01 04 03 06 05 08 07"  # Frame delimiter data pattern
 
@@ -102,6 +109,10 @@ class CANFrameProcessor:
                 'dynamic_x', 'dynamic_y', 'dynamic_vx', 'dynamic_vy',
                 # Static Object  
                 'static_x', 'static_y', 'static_vx', 'static_vy',
+                #HIL Target1
+                'HIL1_x','HIL1_y','HIL1_vx','HIL1_vy',
+                #HIL Target2
+                'HIL2_x','HIL2_y','HIL2_vx','HIL2_vy',
                 # Ego Speed
                 'ego_speed',
                 # Alarm Thresholds
@@ -219,6 +230,17 @@ class CANFrameProcessor:
                     data.get('Static_obj', {}).get('y_val', ''),
                     data.get('Static_obj', {}).get('Vx_val', ''),
                     data.get('Static_obj', {}).get('Vy_val', ''),
+
+                    data.get('HIL_Target1', {}).get('x_val', ''),
+                    data.get('HIL_Target1', {}).get('y_val', ''),
+                    data.get('HIL_Target1', {}).get('Vx_val', ''),
+                    data.get('HIL_Target1', {}).get('Vy_val', ''),
+
+                    data.get('HIL_Target2', {}).get('x_val', ''),
+                    data.get('HIL_Target2', {}).get('y_val', ''),
+                    data.get('HIL_Target2', {}).get('Vx_val', ''),
+                    data.get('HIL_Target2', {}).get('Vy_val', ''),
+
                     # Ego Speed
                     data.get('ego_speed', {}).get('ego_speed', ''),
                     # Alarm Thresholds
@@ -471,6 +493,8 @@ class CANFrameProcessor:
         result = {
             "Dynamic_obj": {},
             "Static_obj": {},
+            "HIL_Target1": {},
+            "HIL_Target2": {},
             "ego_speed": {},
             "Alarm_thresh": {},
             "Alarm_status": {},
@@ -537,6 +561,26 @@ class CANFrameProcessor:
                     if parsed_data:
                         x_val, y_val, Vx_val, Vy_val = parsed_data
                         result["Dynamic_obj"] = {
+                            "x_val": x_val,
+                            "y_val": y_val,
+                            "Vx_val": Vx_val,
+                            "Vy_val": Vy_val
+                        }
+                elif can_id == '100':
+                    parsed_data = self.parse_100(data)
+                    if parsed_data:
+                        x_val, y_val, Vx_val, Vy_val = parsed_data
+                        result["HIL_Target1"] = {
+                            "x_val": x_val,
+                            "y_val": y_val,
+                            "Vx_val": Vx_val,
+                            "Vy_val": Vy_val
+                        }
+                elif can_id == '101':
+                    parsed_data = self.parse_101(data)
+                    if parsed_data:
+                        x_val, y_val, Vx_val, Vy_val = parsed_data
+                        result["HIL_Target2"] = {
                             "x_val": x_val,
                             "y_val": y_val,
                             "Vx_val": Vx_val,
@@ -618,6 +662,8 @@ class CANFrameProcessor:
             print(f"Error parsing 590:{hex_string}: {e}")
             return None
 
+    
+
     def parse_510(self,hex_string):
         try:
             bytes_list = hex_string.split()
@@ -635,6 +681,44 @@ class CANFrameProcessor:
         except Exception as e:
             print(f"Error parsing 510:{hex_string}: {e}")
             return None
+
+    def parse_100(self,hex_string):
+        try:
+            bytes_list = hex_string.split()
+
+            x_val = int(bytes_list[0], 16 ) | ((int(bytes_list[1], 16) & 0b00011111 ) << 8)
+        
+            y_val = ((int(bytes_list[1], 16) & 0b11100000) >> 5) | ((int(bytes_list[2], 16) & 0b11111111) << 3) | ((int(bytes_list[3], 16) & 0b00000001) << 11)
+            Vx_val = ((int(bytes_list[3], 16) & 0b11111110) >> 1) | ((int(bytes_list[4], 16) & 0b00001111) << 7)
+            Vy_val = ((int(bytes_list[4], 16) & 0b11110000) >> 4) | ((int(bytes_list[5], 16) & 0b01111111) << 4 )
+
+            x_val = format(0.032 * x_val - 60.8, '.4f')
+            y_val = format(0.064 * y_val - 131.072, '.4f')
+            Vx_val = format(0.1 * Vx_val - 102.4, '.4f')
+            Vy_val = format(0.1 * Vy_val - 102.4, '.4f')
+            return x_val,y_val,Vx_val,Vy_val
+        except Exception as e:
+            print(f"Error parsing 100:{hex_string}: {e}")
+        return None
+
+    def parse_101(self,hex_string):
+        try:
+            bytes_list = hex_string.split()
+
+            x_val = int(bytes_list[0], 16 ) | ((int(bytes_list[1], 16) & 0b00011111 ) << 8)
+        
+            y_val = ((int(bytes_list[1], 16) & 0b11100000) >> 5) | ((int(bytes_list[2], 16) & 0b11111111) << 3) | ((int(bytes_list[3], 16) & 0b00000001) << 11)
+            Vx_val = ((int(bytes_list[3], 16) & 0b11111110) >> 1) | ((int(bytes_list[4], 16) & 0b00001111) << 7)
+            Vy_val = ((int(bytes_list[4], 16) & 0b11110000) >> 4) | ((int(bytes_list[5], 16) & 0b01111111) << 4 )
+
+            x_val = format(0.032 * x_val - 60.8, '.4f')
+            y_val = format(0.064 * y_val - 131.072, '.4f')
+            Vx_val = format(0.1 * Vx_val - 102.4, '.4f')
+            Vy_val = format(0.1 * Vy_val - 102.4, '.4f')
+            return x_val,y_val,Vx_val,Vy_val
+        except Exception as e:
+            print(f"Error parsing 101:{hex_string}: {e}")
+        return None
 
     def parse_3F5(self,hex_string):
         try:
@@ -993,7 +1077,7 @@ def main():
 
         # Monitor and display statistics
         while True:
-            time.sleep(99999.0)  # Print stats every 10 seconds
+            time.sleep(10.0)  # Print stats every 10 seconds
             # stats = processor.get_statistics()
             # print(f"\n📈 --- Performance Statistics ---")
             # print(f" Runtime: {stats['elapsed_time']:.1f} seconds")
