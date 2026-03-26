@@ -87,6 +87,7 @@ class RadarPlotWidget(QWidget):
         self.static_pool = []  # Pool for static objects
         self.dynamic_pool = []  # Pool for dynamic objects
         self.text_pool = []  # Pool for text labels
+        self.cluster_pool = []  # Pool for cluster objects (yellow dots)
 
         # Pool sizes
         self.max_points = 100
@@ -94,6 +95,7 @@ class RadarPlotWidget(QWidget):
         self.max_static = 1
         self.max_dynamic = 1
         self.max_text = 20
+        self.max_clusters = 64
 
         # Initialize pools
         self._initialize_pools()
@@ -104,6 +106,7 @@ class RadarPlotWidget(QWidget):
         self.active_static = 0
         self.active_dynamic = 0
         self.active_text = 0
+        self.active_clusters = 0
 
         # Background grid (drawn once)
         self.background_pixmap = None
@@ -122,6 +125,12 @@ class RadarPlotWidget(QWidget):
             label = QLabel(self)
             label.hide()
             self.track_pool.append(label)
+
+        # Create cluster widgets pool (yellow dots)
+        for _ in range(self.max_clusters):
+            label = QLabel(self)
+            label.hide()
+            self.cluster_pool.append(label)
 
         # Create static object widgets pool
         for _ in range(self.max_static):
@@ -218,6 +227,9 @@ class RadarPlotWidget(QWidget):
         elif point_type == "dynamic_interest":
             style = "background-color: red; border: 3px solid red; border-radius: 6px;"
             size = (16, 16)
+        elif point_type == "cluster":
+            style = "background-color: yellow; border-radius: 3px;"
+            size = (8, 8)
         else:
             style = "background-color: white; border-radius: 2px;"
             size = (6, 6)
@@ -236,12 +248,14 @@ class RadarPlotWidget(QWidget):
             self.active_static = 0
             self.active_dynamic = 0
             self.active_text = 0
+            self.active_clusters = 0
 
             # Hide all widgets first (faster than deletion)
             self._hide_all_widgets()
 
             detected_points = []
             tracked_objects = []
+            clusters = []
 
             # Extract detected points
             if 'Point_cloud' in json_data and 'Detect_Points' in json_data['Point_cloud']:
@@ -251,11 +265,15 @@ class RadarPlotWidget(QWidget):
             if 'Tracked_obj' in json_data and 'Track_Objects' in json_data['Tracked_obj']:
                 tracked_objects = json_data['Tracked_obj']['Track_Objects']
 
+            # Extract clusters (from CAN frame processor)
+            if 'Cluster_obj' in json_data and 'Clusters' in json_data['Cluster_obj']:
+                clusters = json_data['Cluster_obj']['Clusters']
+
             # Process detected points using pool
             for i, point in enumerate(detected_points[:self.max_points]):
                 widget = self._get_widget_from_pool(self.point_pool, i, self.max_points)
                 if widget:
-                    x = float(point.get('D_X', 0)) * -1
+                    x = float(point.get('D_X', 0))
                     y = float(point.get('D_Y', 0))
                     x_pixel = self.normalize_x(x)
                     y_pixel = self.normalize_y(y)
@@ -266,12 +284,23 @@ class RadarPlotWidget(QWidget):
             for i, track in enumerate(tracked_objects[:self.max_tracks]):
                 widget = self._get_widget_from_pool(self.track_pool, i, self.max_tracks)
                 if widget:
-                    x = float(track.get('T_X', 0)) * -1
+                    x = float(track.get('T_X', 0)) 
                     y = float(track.get('T_Y', 0))
                     x_pixel = self.normalize_x(x)
                     y_pixel = self.normalize_y(y)
                     self._setup_point_widget(widget, x_pixel, y_pixel, "tracked")
                     self.active_tracks += 1
+
+            # Process clusters using pool (yellow dots)
+            for i, cluster in enumerate(clusters[:self.max_clusters]):
+                widget = self._get_widget_from_pool(self.cluster_pool, i, self.max_clusters)
+                if widget:
+                    x = float(cluster.get('C_X', 0))
+                    y = float(cluster.get('C_Y', 0))
+                    x_pixel = self.normalize_x(x)
+                    y_pixel = self.normalize_y(y)
+                    self._setup_point_widget(widget, x_pixel, y_pixel, "cluster")
+                    self.active_clusters += 1
 
             # Process static object of interest
             if 'Static_obj' in json_data and json_data['Static_obj']:
@@ -341,6 +370,10 @@ class RadarPlotWidget(QWidget):
         # Hide track widgets
         for i in range(self.active_tracks, len(self.track_pool)):
             self.track_pool[i].hide()
+
+        # Hide cluster widgets
+        for i in range(self.active_clusters, len(self.cluster_pool)):
+            self.cluster_pool[i].hide()
 
         # Hide static widgets
         for i in range(self.active_static, len(self.static_pool)):

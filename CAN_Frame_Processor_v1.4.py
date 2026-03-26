@@ -20,13 +20,14 @@ import socket
 import json
 
 import sys
-if sys.platform.startswith("win"):
+if sys.platform.startswith("win") and hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 # CAN Configuration Constants
 # TODO: Update these values for your specific system
 #OR_MRR_DATA_HEADER = 0x123 # Replace with your actual CAN ID for frame header
 OR_MRR_DATA_HEADER = 0xC1
 OR_MRR_POINT_CLOUD = 0xD1
+OR_MRR_CLUSTERS = 0xD2
 OR_MRR_TRACKERS = 0xD3
 OR_MRR_PADDING = 0xE1
 OR_FCWS_MOVING_OBJ = 0x510
@@ -39,7 +40,7 @@ HIL_100 =0x100
 HIL_101 =0x101
 HIL_102 =0x102
 
-can_ids_to_filter = [OR_MRR_DATA_HEADER, OR_MRR_POINT_CLOUD, OR_MRR_TRACKERS, OR_FCWS_STATIC_OBJ, OR_FCWS_MOVING_OBJ, OR_ALARM_STATUS, OR_FCWS_THRESH, VEH_SPEED, OR_ECU_ALARM, HIL_100, HIL_101]
+can_ids_to_filter = [OR_MRR_DATA_HEADER, OR_MRR_POINT_CLOUD, OR_MRR_TRACKERS, OR_MRR_CLUSTERS, OR_FCWS_STATIC_OBJ, OR_FCWS_MOVING_OBJ, OR_ALARM_STATUS, OR_FCWS_THRESH, VEH_SPEED, OR_ECU_ALARM, HIL_100, HIL_101]
 
 FRAME_START_DATA = "02 01 04 03 06 05 08 07"  # Frame delimiter data pattern
 
@@ -123,7 +124,9 @@ class CANFrameProcessor:
                 # Point Cloud (counts)
                 'detected_points',
                 # Tracked Objects (counts)
-                'tracked_objects'
+                'tracked_objects',
+                # Clustered Objects
+                'cluster_objects'
             ]
 
             with open(self.parsed_csv_filename, 'w', newline='') as csvfile:
@@ -255,7 +258,9 @@ class CANFrameProcessor:
                     # Point Cloud Count
                     data.get('Point_cloud', {}).get('Detect_Points', []),
                     # Tracked Objects Count
-                    data.get('Tracked_obj', {}).get('Track_Objects', [])
+                    data.get('Tracked_obj', {}).get('Track_Objects', []),
+                    # Clustered Objects (list of clusters for this frame)
+                    data.get('Cluster_obj', {}).get('Clusters', [])
                 ]
 
                 # Write to CSV
@@ -493,6 +498,7 @@ class CANFrameProcessor:
         result = {
             "Dynamic_obj": {},
             "Static_obj": {},
+            "Cluster_obj": {},
             "HIL_Target1": {},
             "HIL_Target2": {},
             "ego_speed": {},
@@ -611,22 +617,31 @@ class CANFrameProcessor:
                     if parsed_data:
                         result["Alarm_status"] = {"Alarm_type": parsed_data}
 
-                elif can_id == 'C1' or can_id == 'D1' or can_id == 'D3':
+                elif can_id == 'C1' or can_id == 'D1' or can_id == 'D2' or  can_id == 'D3':
                     radar_raw_buffer += data
                     radar_raw_buffer += " "
 
             # Process radar frame data
             if radar_raw_buffer.strip():
-                #print(radar_raw_buffer)
+                print(radar_raw_buffer)
+                
                 parsed_data = self.parse_frame_data(radar_raw_buffer)
-                if parsed_data:
+                if len(parsed_data) == 2:
                     Detect_Points, Track_Objects = parsed_data
-                    result["Point_cloud"] = {"Detect_Points": Detect_Points}
-                    result["Tracked_obj"] = {"Track_Objects": Track_Objects}
-
+                    Cluster_Objects = []
+                else:
+                    Detect_Points, Track_Objects, Cluster_Objects = parsed_data
             # print(f" 📈 Message distribution: {dict(sorted(id_counts.items()))}")
             ##print(" ✅ Frame processing completed\n")
-            # print(result)
+            
+            result["Point_cloud"] = {"Detect_Points": Detect_Points}
+            result["Tracked_obj"] = {"Track_Objects": Track_Objects}
+      
+            # NEW: expose clusters parsed from D2 / TLV_TYPE 2
+            if Cluster_Objects:
+                result["Cluster_obj"] = {"Clusters": Cluster_Objects}
+                
+            #print(result)
 
             # Send data to visualizer via socket
             self.send_to_visualizer(result)
@@ -758,6 +773,7 @@ class CANFrameProcessor:
     def parse_frame_data(self, data_hex):
         Detect_Points=[]
         Track_Objects=[]
+        Cluster_Objects = []  # NEW: clusters from TLV_TYPE == 2
         data_list = data_hex.split()
         idx = 0
 
@@ -845,7 +861,7 @@ class CANFrameProcessor:
 
                     Detect_Points.append({'D_X': x, 'D_Y': y,'Doppler':DOPPLER})
 
-        elif NUM_OF_TLV == 2:
+        elif NUM_OF_TLV >= 2:
             for i in range(NUM_OF_TLV):
                 TLV_TYPE_BYTES = data_list[idx:idx+4]
                 TLV_TYPE = int(TLV_TYPE_BYTES[0], 16) + (int(TLV_TYPE_BYTES[1], 16) << 8) + \
@@ -896,8 +912,65 @@ class CANFrameProcessor:
 
                         Detect_Points.append({'D_X': x, 'D_Y': y,'Doppler':DOPPLER})
 
+                elif TLV_TYPE == 2:
+                    # NEW: cluster TLV (MMWDEMO_UART_CLUS equivalent)
+                    # TLV header
+                    TLV_LEN_BYTES = data_list[idx:idx+4]
+                    TLV_LEN = int(TLV_LEN_BYTES[0], 16) + (int(TLV_LEN_BYTES[1], 16) << 8) + \
+                              (int(TLV_LEN_BYTES[2], 16) << 16) + (int(TLV_LEN_BYTES[3], 16) << 24)
+                    idx += 4
+            
+                    # Number of clusters
+                    NUM_CLUS_BYTES = data_list[idx:idx+2]
+                    NUM_CLUS = int(NUM_CLUS_BYTES[0], 16) + (int(NUM_CLUS_BYTES[1], 16) << 8)
+                    idx += 2
+            
+                    # Q-format exponent, as in other TLVs
+                    XYZQFORMAT_BYTES = data_list[idx:idx+2]
+                    XYZQFORMAT = int(XYZQFORMAT_BYTES[0], 16) + (int(XYZQFORMAT_BYTES[1], 16) << 8)
+                    idx += 2
+            
+                    for _ in range(NUM_CLUS):
+                        
+                        # x
+                        X_BYTES = data_list[idx:idx+2]
+                        x = int(X_BYTES[0], 16) + (int(X_BYTES[1], 16) << 8)
+                        if x > 32767:
+                            x -= 65536
+                        idx += 2
+            
+                        # y
+                        Y_BYTES = data_list[idx:idx+2]
+                        y = int(Y_BYTES[0], 16) + (int(Y_BYTES[1], 16) << 8)
+                        if y > 32767:
+                            y -= 65536
+                        idx += 2
+            
+                        # # z
+                        # Z_BYTES = data_list[idx:idx+2]
+                        # z = int(Z_BYTES[0], 16) + (int(Z_BYTES[1], 16) << 8)
+                        # if z > 32767:
+                        #     z -= 65536
+                        # idx += 2
+            
+                        # sizes (xsize, ysize, zsize) – advance index but not used here
+                        idx += 2  # xsize
+                        idx += 2  # ysize
+                        #idx += 2  # zsize
+            
+                        # apply Q-format scaling (same convention as points/tracks)
+                        scale = pow(2, XYZQFORMAT)
+                        x_val = x / scale
+                        y_val = y / scale
+                        #z_val = z / scale
+            
+                        # replicate CLUS filter: only keep reasonable z
+                        # if z_val > -180:
+                        Cluster_Objects.append({'C_X': x_val, 'C_Y': y_val})
+                            
                 elif TLV_TYPE == 3:
                         TLV_LEN_BYTES = data_list[idx:idx+4]
+                        #print(TLV_LEN_BYTES)
                         TLV_LEN = int(TLV_LEN_BYTES[0], 16) + (int(TLV_LEN_BYTES[1], 16) << 8) + \
                                   (int(TLV_LEN_BYTES[2], 16) << 16) + (int(TLV_LEN_BYTES[3], 16) << 24)
                         idx += 4
@@ -905,20 +978,22 @@ class CANFrameProcessor:
                         NUM_OF_TRACK_BYTES = data_list[idx:idx+2]
                         NUM_OF_TRACK = int(NUM_OF_TRACK_BYTES[0], 16) + (int(NUM_OF_TRACK_BYTES[1], 16) << 8)
                         idx += 2
+                        #print(NUM_OF_TRACK)
     
                         XYZQFORMAT_BYTES = data_list[idx:idx+2]
                         XYZQFORMAT = int(XYZQFORMAT_BYTES[0], 16) + (int(XYZQFORMAT_BYTES[1], 16) << 8)
                         idx += 2
-    
+                        
                         #idx += 2 #Tracking ID
                         try:
-                        
                             for i in range(NUM_OF_TRACK):
                                 TRACK_X_BYTES = data_list[idx:idx+2]
                                 TRACK_X = int(TRACK_X_BYTES[0], 16) + (int(TRACK_X_BYTES[1], 16) << 8)
                                 if TRACK_X > 32767:
                                     TRACK_X -= 65536
                                 TRACK_X /= pow(2, XYZQFORMAT)
+                               # print(TRACK_X_BYTES)
+                                #print(TRACK_X)
                                 idx += 2
         
                                 TRACK_Y_BYTES = data_list[idx:idx+2]
@@ -926,7 +1001,7 @@ class CANFrameProcessor:
                                 if TRACK_Y > 32567:
                                     TRACK_Y -= 65536
                                 TRACK_Y /= pow(2, XYZQFORMAT)
-        
+                                #print(TRACK_Y)
                                 if(TRACK_Y < 0.8):
                                     idx = idx + 10
                                     break
@@ -950,11 +1025,22 @@ class CANFrameProcessor:
                                 idx += 4
         
                                 Track_Objects.append({'T_X': TRACK_X, 'T_Y': TRACK_Y, 'T_Vx':TRACK_VX, 'T_Vy':TRACK_VY})
+                                #print(Track_Objects)
                         except Exception as e:
                             return None
-        #print(Detect_Points)
-        #print(Track_Objects)
-        return sorted(Detect_Points, key=lambda x: x['D_Y']),sorted(Track_Objects, key=lambda x: x['T_Y'])
+                        
+                        break
+                elif TLV_TYPE == 4:
+                    continue
+       # print(Detect_Points)
+        print(Track_Objects)
+       # print(Cluster_Objects)
+        return (
+            sorted(Detect_Points, key=lambda x: x['D_Y']),
+            sorted(Track_Objects, key=lambda x: x['T_Y']),
+            sorted(Cluster_Objects, key=lambda x: x['C_Y'])
+        )
+        # return sorted(Detect_Points, key=lambda x: x['D_Y']),sorted(Track_Objects, key=lambda x: x['T_Y'])
 
     def start_processing(self) -> bool:
         """Start CAN collection and frame processing threads"""
