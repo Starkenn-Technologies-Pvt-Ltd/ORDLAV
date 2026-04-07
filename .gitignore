@@ -9,6 +9,17 @@ __pycache__/
 #CSV files
 *.csv
 
+#Excel files
+*.xslx
+
+
+#Text files
+*.txt
+
+#Image files
+*.png
+
+
 # Distribution / packaging
 .Python
 build/
