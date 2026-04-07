@@ -34,6 +34,18 @@ for CSV_FILE in csv_files:
 
     df = pd.read_csv(CSV_FILE)
 
+    # ── Validate required columns — skip file if any are missing ──────────
+    REQUIRED_COLS = [
+        'timestamp',
+        'dynamic_x', 'dynamic_y', 'dynamic_vx', 'dynamic_vy',
+        'static_x',  'static_y',  'static_vx',  'static_vy',
+        'HIL1_x',    'HIL1_y',    'HIL1_vx',    'HIL1_vy',
+    ]
+    missing_cols = [c for c in REQUIRED_COLS if c not in df.columns]
+    if missing_cols:
+        print(f'  SKIPPED — missing required columns: {missing_cols}')
+        continue
+
     # ─────────────────────────────────────────────
     # Statistical analysis helper
     # ─────────────────────────────────────────────
@@ -263,7 +275,7 @@ for CSV_FILE in csv_files:
     print('Saved:', os.path.join(FOLDER_NAME, FILE_PREFIX + 'plot_static_obj1_vs_hil_target1.png'))
 
 
-    # ─────────────────────────────────────────────
+        # ─────────────────────────────────────────────
     # Move input CSV into the output folder
     # ─────────────────────────────────────────────
     csv_dest = os.path.join(FOLDER_NAME, os.path.basename(CSV_FILE))
