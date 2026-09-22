@@ -551,6 +551,159 @@ class RadarVisualizerMainWindow(QMainWindow):
         self.timestamp_label.adjustSize()
         # Position will be set in resizeEvent
 
+        # ADD New Labels as much as you want here
+        # It has to be somewhere dynamically updated with values somehow
+        # Adding Object Identification Label
+
+        nObjectIdentificationLabelXPos=10
+        nObjectIdentificationLabelYPos=400   
+        nDeltaForEachLabelX=0
+        nDeltaForEachLabelY=20
+        nNumberofLabels=0  
+
+        self.nObjectIdentificationLabel = QLabel("ObjectID : ", self)
+        self.nObjectIdentificationLabel.setStyleSheet("""
+            QLabel {
+                color: white;
+                background-color: rgba(0, 0, 0, 180);
+                padding: 6px 10px;
+                font: bold 10px Arial;
+            }
+        """)
+        self.nObjectIdentificationLabel.adjustSize()
+        self.nObjectIdentificationLabel.move(nObjectIdentificationLabelXPos,nObjectIdentificationLabelYPos)
+        nNumberofLabels+=1
+
+
+        # Adding Distance X Label
+        self.nDistXLabel = QLabel("distX : ", self)
+        self.nDistXLabel.setStyleSheet("""
+            QLabel {
+                color: white;
+                background-color: rgba(0, 0, 0, 180);
+                padding: 6px 10px;
+                font: bold 10px Arial;
+            }
+        """)
+        self.nDistXLabel.adjustSize()
+        self.nDistXLabel.move(nObjectIdentificationLabelXPos+(nDeltaForEachLabelX*nNumberofLabels),nObjectIdentificationLabelYPos+(nDeltaForEachLabelY*nNumberofLabels))
+        nNumberofLabels+=1
+
+        # Adding Distance Y Label
+        self.nDistYLabel = QLabel("distY : ", self)
+        self.nDistYLabel.setStyleSheet("""
+            QLabel {
+                color: white;
+                background-color: rgba(0, 0, 0, 180);
+                padding: 6px 10px;
+                font: bold 10px Arial;
+            }
+        """)
+        self.nDistYLabel.adjustSize()
+        self.nDistYLabel.move(nObjectIdentificationLabelXPos+(nDeltaForEachLabelX*nNumberofLabels),nObjectIdentificationLabelYPos+(nDeltaForEachLabelY*nNumberofLabels))     
+        nNumberofLabels+=1
+
+        # Adding vRelX
+        self.nvRelXLabel = QLabel("vRelX : ", self)
+        self.nvRelXLabel.setStyleSheet("""
+            QLabel {
+                color: white;
+                background-color: rgba(0, 0, 0, 180);
+                padding: 6px 10px;
+                font: bold 10px Arial;
+            }
+        """)
+        self.nvRelXLabel.adjustSize()
+        self.nvRelXLabel.move(nObjectIdentificationLabelXPos+(nDeltaForEachLabelX*nNumberofLabels),nObjectIdentificationLabelYPos+(nDeltaForEachLabelY*nNumberofLabels))     
+        nNumberofLabels+=1
+
+        # Adding vRelY
+        self.nvRelYLabel = QLabel("vRelY : ", self)
+        self.nvRelYLabel.setStyleSheet("""
+            QLabel {
+                color: white;
+                background-color: rgba(0, 0, 0, 180);
+                padding: 6px 10px;
+                font: bold 10px Arial;
+            }
+        """)
+        self.nvRelYLabel.adjustSize()
+        self.nvRelYLabel.move(nObjectIdentificationLabelXPos+(nDeltaForEachLabelX*nNumberofLabels),nObjectIdentificationLabelYPos+(nDeltaForEachLabelY*nNumberofLabels))     
+        nNumberofLabels+=1
+
+        # Adding aRelX
+        self.naRelXLabel = QLabel("aRelX : ", self)
+        self.naRelXLabel.setStyleSheet("""
+            QLabel {
+                color: white;
+                background-color: rgba(0, 0, 0, 180);
+                padding: 6px 10px;
+                font: bold 10px Arial;
+            }
+        """)
+        self.naRelXLabel.adjustSize()
+        self.naRelXLabel.move(nObjectIdentificationLabelXPos+(nDeltaForEachLabelX*nNumberofLabels),nObjectIdentificationLabelYPos+(nDeltaForEachLabelY*nNumberofLabels))     
+        nNumberofLabels+=1
+
+        # Adding aRelY
+        self.naRelYLabel = QLabel("aRelY : ", self)
+        self.naRelYLabel.setStyleSheet("""
+            QLabel {
+                color: white;
+                background-color: rgba(0, 0, 0, 180);
+                padding: 6px 10px;
+                font: bold 10px Arial;
+            }
+        """)
+        self.naRelYLabel.adjustSize()
+        self.naRelYLabel.move(nObjectIdentificationLabelXPos+(nDeltaForEachLabelX*nNumberofLabels),nObjectIdentificationLabelYPos+(nDeltaForEachLabelY*nNumberofLabels))     
+        nNumberofLabels+=1
+
+        # Adding Orientation
+        self.nOrientation = QLabel("Orientation : ", self)
+        self.nOrientation.setStyleSheet("""
+            QLabel {
+                color: white;
+                background-color: rgba(0, 0, 0, 180);
+                padding: 6px 10px;
+                font: bold 10px Arial;
+            }
+        """)
+        self.nOrientation.adjustSize()
+        self.nOrientation.move(nObjectIdentificationLabelXPos+(nDeltaForEachLabelX*nNumberofLabels),nObjectIdentificationLabelYPos+(nDeltaForEachLabelY*nNumberofLabels))     
+        nNumberofLabels+=1
+
+
+        # Adding Dynamic Property
+        self.nDynamicProperty = QLabel("Dynamic Property : ", self)
+        self.nDynamicProperty.setStyleSheet("""
+            QLabel {
+                color: white;
+                background-color: rgba(0, 0, 0, 180);
+                padding: 6px 10px;
+                font: bold 10px Arial;
+            }
+        """)
+        self.nDynamicProperty.adjustSize()
+        self.nDynamicProperty.move(nObjectIdentificationLabelXPos+(nDeltaForEachLabelX*nNumberofLabels),nObjectIdentificationLabelYPos+(nDeltaForEachLabelY*nNumberofLabels))     
+        nNumberofLabels+=1
+
+        # Adding Classification
+        self.nClassification = QLabel("Classification : ", self)
+        self.nClassification.setStyleSheet("""
+            QLabel {
+                color: white;
+                background-color: rgba(0, 0, 0, 180);
+                padding: 6px 10px;
+                font: bold 10px Arial;
+            }
+        """)
+        self.nClassification.adjustSize()
+        self.nClassification.move(nObjectIdentificationLabelXPos+(nDeltaForEachLabelX*nNumberofLabels),nObjectIdentificationLabelYPos+(nDeltaForEachLabelY*nNumberofLabels))     
+        nNumberofLabels+=1
+
+        # You can use the Same Above Template and add as many labels as you like
+
     def update_timestamp(self):
         """Update timestamp display independently - called by timer"""
         try:
