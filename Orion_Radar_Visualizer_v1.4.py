@@ -14,6 +14,7 @@ HOST = '127.0.0.1'  # CAN Processor IP
 PORT = 5001  # CAN Processor Port
 count = 0
 
+# A Socket Connection to get the CAN Frame Data as JSON
 class SocketClientThread(QThread):
     """Optimized background thread for handling socket communication."""
     data_received = pyqtSignal(object)  # Signal to send received data to UI
@@ -23,6 +24,9 @@ class SocketClientThread(QThread):
         self.running = True
         self.buffer = ""  # Buffer to accumulate incoming data
 
+
+    # Basically All CAN Messages are received as a JSON Data in the LocalHost
+    # If they are received valid, then tokenize the JSON Data
     def run(self):
         """Connects to CAN processor server, receives JSON data, and emits it to UI."""
         while self.running:
