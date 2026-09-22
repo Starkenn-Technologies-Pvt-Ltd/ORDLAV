@@ -216,7 +216,7 @@ class RadarPlotWidget(QWidget):
     def _setup_point_widget(self, widget, x_pixel, y_pixel, point_type="detected"):
         """Setup a widget for a specific point type"""
         if point_type == "detected":
-            style = "background-color: cyan; border-radius: 3px;"
+            style = "background-color: violet; border-radius: 3px;"
             size = (8, 8)
         elif point_type == "tracked":
             style = "background-color: blue; border: 2px solid blue; border-radius: 4px;"
