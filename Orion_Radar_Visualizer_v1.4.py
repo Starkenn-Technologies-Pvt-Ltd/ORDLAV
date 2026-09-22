@@ -561,7 +561,7 @@ class RadarVisualizerMainWindow(QMainWindow):
         nDeltaForEachLabelY=20
         nNumberofLabels=0  
 
-        self.nObjectIdentificationLabel = QLabel("ObjectID : ", self)
+        self.nObjectIdentificationLabel = QLabel("ObjectID                  : ", self)
         self.nObjectIdentificationLabel.setStyleSheet("""
             QLabel {
                 color: white;
@@ -576,7 +576,7 @@ class RadarVisualizerMainWindow(QMainWindow):
 
 
         # Adding Distance X Label
-        self.nDistXLabel = QLabel("distX : ", self)
+        self.nDistXLabel = QLabel("distX                       : ", self)
         self.nDistXLabel.setStyleSheet("""
             QLabel {
                 color: white;
@@ -590,7 +590,7 @@ class RadarVisualizerMainWindow(QMainWindow):
         nNumberofLabels+=1
 
         # Adding Distance Y Label
-        self.nDistYLabel = QLabel("distY : ", self)
+        self.nDistYLabel = QLabel("distY                       : ", self)
         self.nDistYLabel.setStyleSheet("""
             QLabel {
                 color: white;
@@ -604,7 +604,7 @@ class RadarVisualizerMainWindow(QMainWindow):
         nNumberofLabels+=1
 
         # Adding vRelX
-        self.nvRelXLabel = QLabel("vRelX : ", self)
+        self.nvRelXLabel = QLabel("vRelX                       : ", self)
         self.nvRelXLabel.setStyleSheet("""
             QLabel {
                 color: white;
@@ -618,7 +618,7 @@ class RadarVisualizerMainWindow(QMainWindow):
         nNumberofLabels+=1
 
         # Adding vRelY
-        self.nvRelYLabel = QLabel("vRelY : ", self)
+        self.nvRelYLabel = QLabel("vRelY                       : ", self)
         self.nvRelYLabel.setStyleSheet("""
             QLabel {
                 color: white;
@@ -632,7 +632,7 @@ class RadarVisualizerMainWindow(QMainWindow):
         nNumberofLabels+=1
 
         # Adding aRelX
-        self.naRelXLabel = QLabel("aRelX : ", self)
+        self.naRelXLabel = QLabel("aRelX                       : ", self)
         self.naRelXLabel.setStyleSheet("""
             QLabel {
                 color: white;
@@ -646,7 +646,7 @@ class RadarVisualizerMainWindow(QMainWindow):
         nNumberofLabels+=1
 
         # Adding aRelY
-        self.naRelYLabel = QLabel("aRelY : ", self)
+        self.naRelYLabel = QLabel("aRelY                       : ", self)
         self.naRelYLabel.setStyleSheet("""
             QLabel {
                 color: white;
@@ -660,7 +660,7 @@ class RadarVisualizerMainWindow(QMainWindow):
         nNumberofLabels+=1
 
         # Adding Orientation
-        self.nOrientation = QLabel("Orientation : ", self)
+        self.nOrientation = QLabel("Orientation                 : ", self)
         self.nOrientation.setStyleSheet("""
             QLabel {
                 color: white;
@@ -675,7 +675,7 @@ class RadarVisualizerMainWindow(QMainWindow):
 
 
         # Adding Dynamic Property
-        self.nDynamicProperty = QLabel("Dynamic Property : ", self)
+        self.nDynamicProperty = QLabel("Dynamic Property        : ", self)
         self.nDynamicProperty.setStyleSheet("""
             QLabel {
                 color: white;
@@ -689,7 +689,7 @@ class RadarVisualizerMainWindow(QMainWindow):
         nNumberofLabels+=1
 
         # Adding Classification
-        self.nClassification = QLabel("Classification : ", self)
+        self.nClassification = QLabel("Classification              : ", self)
         self.nClassification.setStyleSheet("""
             QLabel {
                 color: white;
@@ -740,13 +740,32 @@ class RadarVisualizerMainWindow(QMainWindow):
                 self.ego_speed_label.setText("Ego Speed: N/A km/h")
             self.ego_speed_label.adjustSize()
 
+
             # NOTE: Timestamp is now updated independently by timer, not here
 
             # Batch table updates
             self._update_tables(json_data)
 
+            # Update all the Individual Values also as per the JSON
+            self._nUpdateMultipleLabelValues(json_data)
+
         except Exception as e:
             print(f"❌ Error updating display: {e}")
+
+
+
+    def _nUpdateMultipleLabelValues(self,json_data):
+        """Update Multiple Values of the Static/Dynamic Object based on their X Pos, Y Pos, xRel Pos, yRelPos"""
+
+
+        # Update static object table
+        if 'Static_obj' in json_data and json_data['Static_obj']:
+            static_data = [
+                self.format_value(json_data['Static_obj'].get('x_val', 'N/A')),
+                self.format_value(json_data['Static_obj'].get('y_val', 'N/A'))
+            ]
+            self.static_obj_table.update_data(static_data)
+
 
     def _update_tables(self, json_data):
         """Optimized table updates"""
