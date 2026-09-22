@@ -117,37 +117,37 @@ class RadarPlotWidget(QWidget):
         # Create point widgets pool
         for _ in range(self.max_points):
             label = QLabel(self)
-            label.hide()
+            #label.hide()
             self.point_pool.append(label)
 
         # Create track widgets pool
         for _ in range(self.max_tracks):
             label = QLabel(self)
-            label.hide()
+            #label.hide()
             self.track_pool.append(label)
 
         # Create cluster widgets pool (yellow dots)
         for _ in range(self.max_clusters):
             label = QLabel(self)
-            label.hide()
+            #label.hide()
             self.cluster_pool.append(label)
 
         # Create static object widgets pool
         for _ in range(self.max_static):
             label = QLabel(self)
-            label.hide()
+            #label.hide()
             self.static_pool.append(label)
 
         # Create dynamic object widgets pool
         for _ in range(self.max_dynamic):
             label = QLabel(self)
-            label.hide()
+            #label.hide()
             self.dynamic_pool.append(label)
 
         # Create text widgets pool
         for _ in range(self.max_text):
             label = QLabel(self)
-            label.hide()
+            #label.hide()
             self.text_pool.append(label)
 
     def create_background(self):
