@@ -757,14 +757,71 @@ class RadarVisualizerMainWindow(QMainWindow):
     def _nUpdateMultipleLabelValues(self,json_data):
         """Update Multiple Values of the Static/Dynamic Object based on their X Pos, Y Pos, xRel Pos, yRelPos"""
 
+        # Get All the Values of the Labels
 
-        # Update static object table
-        if 'Static_obj' in json_data and json_data['Static_obj']:
-            static_data = [
-                self.format_value(json_data['Static_obj'].get('x_val', 'N/A')),
-                self.format_value(json_data['Static_obj'].get('y_val', 'N/A'))
-            ]
-            self.static_obj_table.update_data(static_data)
+        #Initialize with Dummy Values. Update it Later after discussion with Pranali
+        nObjectIdentification   = 9999
+        nDistX = 9999
+        nDistY = 9999
+        vRelX = 9999
+        nvRelY = 9999
+        naRelX = 9999
+        naRelY = 9999
+        nOrientation = 9999
+        nDynamicProperty = 9999
+        nClassification = 9999
+
+        if 'Dynamic_obj' in json_data and json_data['Dynamic_obj']:
+            nDistX = self.format_value(json_data['Dynamic_obj'].get('x_val', 'N/A'))
+
+            if nDistX>=0:
+                try:
+                    self.nDistXLabel.setText(f"distX                       : {nDistX:.4f}")
+                except (ValueError, TypeError):
+                    self.nDistXLabel.setText(f"distX                       : {nDistX:.4f}")
+            else:
+                self.nDistXLabel.setText(f"distX                       : {nDistX:.4f}")
+            self.nDistXLabel.adjustSize()
+
+
+        if 'Dynamic_obj' in json_data and json_data['Dynamic_obj']:
+            nDistY = self.format_value(json_data['Dynamic_obj'].get('y_val', 'N/A'))
+
+            if nDistY>=0:
+                try:
+                    self.nDistYLabel.setText(f"distY                       : {nDistY:.4f}")
+                except (ValueError, TypeError):
+                    self.nDistYLabel.setText(f"distY                       : {nDistY:.4f}")
+            else:
+                self.nDistYLabel.setText(f"distY                       : {nDistY:.4f}")
+            self.nDistYLabel.adjustSize()
+
+
+
+        if 'Dynamic_obj' in json_data and json_data['Dynamic_obj']:
+            vRelX = self.format_value(json_data['Dynamic_obj'].get('Vx_val', 'N/A'))
+
+            if vRelX>=0:
+                try:
+                    self.nvRelXLabel.setText(f"vRelX                       : {vRelX:.4f}")
+                except (ValueError, TypeError):
+                    self.nvRelXLabel.setText(f"vRelX                       : {vRelX:.4f}")
+            else:
+                self.nvRelXLabel.setText(f"vRelX                       : {vRelX:.4f}")
+            self.nvRelXLabel.adjustSize()
+
+
+        if 'Dynamic_obj' in json_data and json_data['Dynamic_obj']:
+            vRelY = self.format_value(json_data['Dynamic_obj'].get('Vy_val', 'N/A'))
+
+            if vRelY>=0:
+                try:
+                    self.nvRelYLabel.setText(f"vRelY                       : {vRelY:.4f}")
+                except (ValueError, TypeError):
+                    self.nvRelYLabel.setText(f"vRelY                       : {vRelY:.4f}")
+            else:
+                self.nvRelYLabel.setText(f"vRelY                       : {vRelY:.4f}")
+            self.nvRelYLabel.adjustSize()
 
 
     def _update_tables(self, json_data):
