@@ -784,6 +784,22 @@ class RadarVisualizerMainWindow(QMainWindow):
             self.nDistXLabel.adjustSize()
 
 
+
+
+        if 'Static_obj' in json_data and json_data['Static_obj']:
+
+            nDistX = self.format_value(json_data['Static_obj'].get('x_val', 'N/A'))
+
+            if nDistX>=0:
+                try:
+                    self.nDistXLabel.setText(f"distX                       : {nDistX:.4f}")
+                except (ValueError, TypeError):
+                    self.nDistXLabel.setText(f"distX                       : {nDistX:.4f}")
+            else:
+                self.nDistXLabel.setText(f"distX                       : {nDistX:.4f}")
+            self.nDistXLabel.adjustSize()
+
+
         if 'Dynamic_obj' in json_data and json_data['Dynamic_obj']:
             nDistY = self.format_value(json_data['Dynamic_obj'].get('y_val', 'N/A'))
 
