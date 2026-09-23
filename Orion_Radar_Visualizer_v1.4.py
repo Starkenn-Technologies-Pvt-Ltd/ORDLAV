@@ -792,11 +792,11 @@ class RadarVisualizerMainWindow(QMainWindow):
 
             if nDistX>=0:
                 try:
-                    self.nDistXLabel.setText(f"distX                       : {nDistX:.4f}")
+                    self.nDistXLabel.setText(f"distX                       : {nDistX}")
                 except (ValueError, TypeError):
-                    self.nDistXLabel.setText(f"distX                       : {nDistX:.4f}")
+                    self.nDistXLabel.setText(f"distX                       : {nDistX}")
             else:
-                self.nDistXLabel.setText(f"distX                       : {nDistX:.4f}")
+                self.nDistXLabel.setText(f"distX                       : {nDistX}")
             self.nDistXLabel.adjustSize()
 
 
