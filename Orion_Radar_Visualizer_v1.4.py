@@ -14,6 +14,7 @@ HOST = '127.0.0.1'  # CAN Processor IP
 PORT = 5001  # CAN Processor Port
 count = 0
 
+# A Socket Connection to get the CAN Frame Data as JSON
 class SocketClientThread(QThread):
     """Optimized background thread for handling socket communication."""
     data_received = pyqtSignal(object)  # Signal to send received data to UI
@@ -23,6 +24,9 @@ class SocketClientThread(QThread):
         self.running = True
         self.buffer = ""  # Buffer to accumulate incoming data
 
+
+    # Basically All CAN Messages are received as a JSON Data in the LocalHost
+    # If they are received valid, then tokenize the JSON Data
     def run(self):
         """Connects to CAN processor server, receives JSON data, and emits it to UI."""
         while self.running:
@@ -117,37 +121,37 @@ class RadarPlotWidget(QWidget):
         # Create point widgets pool
         for _ in range(self.max_points):
             label = QLabel(self)
-            label.hide()
+            #label.hide()
             self.point_pool.append(label)
 
         # Create track widgets pool
         for _ in range(self.max_tracks):
             label = QLabel(self)
-            label.hide()
+            #label.hide()
             self.track_pool.append(label)
 
         # Create cluster widgets pool (yellow dots)
         for _ in range(self.max_clusters):
             label = QLabel(self)
-            label.hide()
+            #label.hide()
             self.cluster_pool.append(label)
 
         # Create static object widgets pool
         for _ in range(self.max_static):
             label = QLabel(self)
-            label.hide()
+            #label.hide()
             self.static_pool.append(label)
 
         # Create dynamic object widgets pool
         for _ in range(self.max_dynamic):
             label = QLabel(self)
-            label.hide()
+            #label.hide()
             self.dynamic_pool.append(label)
 
         # Create text widgets pool
         for _ in range(self.max_text):
             label = QLabel(self)
-            label.hide()
+            #label.hide()
             self.text_pool.append(label)
 
     def create_background(self):
@@ -216,7 +220,7 @@ class RadarPlotWidget(QWidget):
     def _setup_point_widget(self, widget, x_pixel, y_pixel, point_type="detected"):
         """Setup a widget for a specific point type"""
         if point_type == "detected":
-            style = "background-color: violet; border-radius: 3px;"
+            style = "background-color: #9400D3; border-radius: 3px;"
             size = (8, 8)
         elif point_type == "tracked":
             style = "background-color: blue; border: 2px solid blue; border-radius: 4px;"
@@ -547,6 +551,159 @@ class RadarVisualizerMainWindow(QMainWindow):
         self.timestamp_label.adjustSize()
         # Position will be set in resizeEvent
 
+        # ADD New Labels as much as you want here
+        # It has to be somewhere dynamically updated with values somehow
+        # Adding Object Identification Label
+
+        nObjectIdentificationLabelXPos=10
+        nObjectIdentificationLabelYPos=400   
+        nDeltaForEachLabelX=0
+        nDeltaForEachLabelY=20
+        nNumberofLabels=0  
+
+        self.nObjectIdentificationLabel = QLabel("ObjectID                  : ", self)
+        self.nObjectIdentificationLabel.setStyleSheet("""
+            QLabel {
+                color: white;
+                background-color: rgba(0, 0, 0, 180);
+                padding: 6px 10px;
+                font: bold 10px Arial;
+            }
+        """)
+        self.nObjectIdentificationLabel.adjustSize()
+        self.nObjectIdentificationLabel.move(nObjectIdentificationLabelXPos,nObjectIdentificationLabelYPos)
+        nNumberofLabels+=1
+
+
+        # Adding Distance X Label
+        self.nDistXLabel = QLabel("distX                       : ", self)
+        self.nDistXLabel.setStyleSheet("""
+            QLabel {
+                color: white;
+                background-color: rgba(0, 0, 0, 180);
+                padding: 6px 10px;
+                font: bold 10px Arial;
+            }
+        """)
+        self.nDistXLabel.adjustSize()
+        self.nDistXLabel.move(nObjectIdentificationLabelXPos+(nDeltaForEachLabelX*nNumberofLabels),nObjectIdentificationLabelYPos+(nDeltaForEachLabelY*nNumberofLabels))
+        nNumberofLabels+=1
+
+        # Adding Distance Y Label
+        self.nDistYLabel = QLabel("distY                       : ", self)
+        self.nDistYLabel.setStyleSheet("""
+            QLabel {
+                color: white;
+                background-color: rgba(0, 0, 0, 180);
+                padding: 6px 10px;
+                font: bold 10px Arial;
+            }
+        """)
+        self.nDistYLabel.adjustSize()
+        self.nDistYLabel.move(nObjectIdentificationLabelXPos+(nDeltaForEachLabelX*nNumberofLabels),nObjectIdentificationLabelYPos+(nDeltaForEachLabelY*nNumberofLabels))     
+        nNumberofLabels+=1
+
+        # Adding vRelX
+        self.nvRelXLabel = QLabel("vRelX                       : ", self)
+        self.nvRelXLabel.setStyleSheet("""
+            QLabel {
+                color: white;
+                background-color: rgba(0, 0, 0, 180);
+                padding: 6px 10px;
+                font: bold 10px Arial;
+            }
+        """)
+        self.nvRelXLabel.adjustSize()
+        self.nvRelXLabel.move(nObjectIdentificationLabelXPos+(nDeltaForEachLabelX*nNumberofLabels),nObjectIdentificationLabelYPos+(nDeltaForEachLabelY*nNumberofLabels))     
+        nNumberofLabels+=1
+
+        # Adding vRelY
+        self.nvRelYLabel = QLabel("vRelY                       : ", self)
+        self.nvRelYLabel.setStyleSheet("""
+            QLabel {
+                color: white;
+                background-color: rgba(0, 0, 0, 180);
+                padding: 6px 10px;
+                font: bold 10px Arial;
+            }
+        """)
+        self.nvRelYLabel.adjustSize()
+        self.nvRelYLabel.move(nObjectIdentificationLabelXPos+(nDeltaForEachLabelX*nNumberofLabels),nObjectIdentificationLabelYPos+(nDeltaForEachLabelY*nNumberofLabels))     
+        nNumberofLabels+=1
+
+        # Adding aRelX
+        self.naRelXLabel = QLabel("aRelX                       : ", self)
+        self.naRelXLabel.setStyleSheet("""
+            QLabel {
+                color: white;
+                background-color: rgba(0, 0, 0, 180);
+                padding: 6px 10px;
+                font: bold 10px Arial;
+            }
+        """)
+        self.naRelXLabel.adjustSize()
+        self.naRelXLabel.move(nObjectIdentificationLabelXPos+(nDeltaForEachLabelX*nNumberofLabels),nObjectIdentificationLabelYPos+(nDeltaForEachLabelY*nNumberofLabels))     
+        nNumberofLabels+=1
+
+        # Adding aRelY
+        self.naRelYLabel = QLabel("aRelY                       : ", self)
+        self.naRelYLabel.setStyleSheet("""
+            QLabel {
+                color: white;
+                background-color: rgba(0, 0, 0, 180);
+                padding: 6px 10px;
+                font: bold 10px Arial;
+            }
+        """)
+        self.naRelYLabel.adjustSize()
+        self.naRelYLabel.move(nObjectIdentificationLabelXPos+(nDeltaForEachLabelX*nNumberofLabels),nObjectIdentificationLabelYPos+(nDeltaForEachLabelY*nNumberofLabels))     
+        nNumberofLabels+=1
+
+        # Adding Orientation
+        self.nOrientation = QLabel("Orientation                 : ", self)
+        self.nOrientation.setStyleSheet("""
+            QLabel {
+                color: white;
+                background-color: rgba(0, 0, 0, 180);
+                padding: 6px 10px;
+                font: bold 10px Arial;
+            }
+        """)
+        self.nOrientation.adjustSize()
+        self.nOrientation.move(nObjectIdentificationLabelXPos+(nDeltaForEachLabelX*nNumberofLabels),nObjectIdentificationLabelYPos+(nDeltaForEachLabelY*nNumberofLabels))     
+        nNumberofLabels+=1
+
+
+        # Adding Dynamic Property
+        self.nDynamicProperty = QLabel("Dynamic Property        : ", self)
+        self.nDynamicProperty.setStyleSheet("""
+            QLabel {
+                color: white;
+                background-color: rgba(0, 0, 0, 180);
+                padding: 6px 10px;
+                font: bold 10px Arial;
+            }
+        """)
+        self.nDynamicProperty.adjustSize()
+        self.nDynamicProperty.move(nObjectIdentificationLabelXPos+(nDeltaForEachLabelX*nNumberofLabels),nObjectIdentificationLabelYPos+(nDeltaForEachLabelY*nNumberofLabels))     
+        nNumberofLabels+=1
+
+        # Adding Classification
+        self.nClassification = QLabel("Classification              : ", self)
+        self.nClassification.setStyleSheet("""
+            QLabel {
+                color: white;
+                background-color: rgba(0, 0, 0, 180);
+                padding: 6px 10px;
+                font: bold 10px Arial;
+            }
+        """)
+        self.nClassification.adjustSize()
+        self.nClassification.move(nObjectIdentificationLabelXPos+(nDeltaForEachLabelX*nNumberofLabels),nObjectIdentificationLabelYPos+(nDeltaForEachLabelY*nNumberofLabels))     
+        nNumberofLabels+=1
+
+        # You can use the Same Above Template and add as many labels as you like
+
     def update_timestamp(self):
         """Update timestamp display independently - called by timer"""
         try:
@@ -583,13 +740,131 @@ class RadarVisualizerMainWindow(QMainWindow):
                 self.ego_speed_label.setText("Ego Speed: N/A km/h")
             self.ego_speed_label.adjustSize()
 
+
             # NOTE: Timestamp is now updated independently by timer, not here
 
             # Batch table updates
             self._update_tables(json_data)
 
+            # Update all the Individual Values also as per the JSON
+            self._nUpdateMultipleLabelValues(json_data)
+
         except Exception as e:
             print(f"❌ Error updating display: {e}")
+
+
+
+    def _nUpdateMultipleLabelValues(self,json_data):
+        """Update Multiple Values of the Static/Dynamic Object based on their X Pos, Y Pos, xRel Pos, yRelPos"""
+
+        # Get All the Values of the Labels
+
+        #Initialize with Dummy Values. Update it Later after discussion with Pranali
+        nObjectIdentification   = 9999
+        nDistX = 9999
+        nDistY = 9999
+        vRelX = 9999
+        nvRelY = 9999
+        naRelX = 9999
+        naRelY = 9999
+        nOrientation = 9999
+        nDynamicProperty = 9999
+        nClassification = 9999
+
+        if 'Dynamic_obj' in json_data and json_data['Dynamic_obj']:
+            nDistX = self.format_value(
+                json_data['Dynamic_obj'].get('x_val', 'N/A'),
+                4
+            )
+            self.nDistXLabel.setText(f"distX : {nDistX}")
+
+            nDistY = self.format_value(
+                json_data['Dynamic_obj'].get('y_val', 'N/A'),
+                4
+            )
+            self.nDistYLabel.setText(f"distY : {nDistY}")
+
+            vRelX = self.format_value(
+                json_data['Dynamic_obj'].get('Vx_val', 'N/A'),
+                4
+            )
+            self.nvRelXLabel.setText(f"vRelX : {vRelX}")
+
+            vRelY = self.format_value(
+                json_data['Dynamic_obj'].get('Vy_val', 'N/A'),
+                4
+            )
+            self.nvRelYLabel.setText(f"vRelY : {vRelY}")
+
+
+        # if 'Dynamic_obj' in json_data and json_data['Dynamic_obj']:
+        #     nDistX = self.format_value(json_data['Dynamic_obj'].get('x_val', 'N/A'))
+
+        #     if nDistX>=0:
+        #         try:
+        #             self.nDistXLabel.setText(f"distX                       : {nDistX:.4f}")
+        #         except (ValueError, TypeError):
+        #             self.nDistXLabel.setText(f"distX                       : {nDistX:.4f}")
+        #     else:
+        #         self.nDistXLabel.setText(f"distX                       : {nDistX:.4f}")
+        #     self.nDistXLabel.adjustSize()
+
+
+
+
+        # if 'Static_obj' in json_data and json_data['Static_obj']:
+
+        #     nDistX = self.format_value(json_data['Static_obj'].get('x_val', 'N/A'))
+
+        #     if nDistX>=0:
+        #         try:
+        #             self.nDistXLabel.setText(f"distX                       : {nDistX}")
+        #         except (ValueError, TypeError):
+        #             self.nDistXLabel.setText(f"distX                       : {nDistX}")
+        #     else:
+        #         self.nDistXLabel.setText(f"distX                       : {nDistX}")
+        #     self.nDistXLabel.adjustSize()
+
+
+        # if 'Dynamic_obj' in json_data and json_data['Dynamic_obj']:
+        #     nDistY = self.format_value(json_data['Dynamic_obj'].get('y_val', 'N/A'))
+
+        #     if nDistY>=0:
+        #         try:
+        #             self.nDistYLabel.setText(f"distY                       : {nDistY:.4f}")
+        #         except (ValueError, TypeError):
+        #             self.nDistYLabel.setText(f"distY                       : {nDistY:.4f}")
+        #     else:
+        #         self.nDistYLabel.setText(f"distY                       : {nDistY:.4f}")
+        #     self.nDistYLabel.adjustSize()
+
+
+
+        # if 'Dynamic_obj' in json_data and json_data['Dynamic_obj']:
+        #     vRelX = self.format_value(json_data['Dynamic_obj'].get('Vx_val', 'N/A'))
+
+        #     if vRelX>=0:
+        #         try:
+        #             self.nvRelXLabel.setText(f"vRelX                       : {vRelX:.4f}")
+        #         except (ValueError, TypeError):
+        #             self.nvRelXLabel.setText(f"vRelX                       : {vRelX:.4f}")
+        #     else:
+        #         self.nvRelXLabel.setText(f"vRelX                       : {vRelX:.4f}")
+        #     self.nvRelXLabel.adjustSize()
+
+
+        # if 'Dynamic_obj' in json_data and json_data['Dynamic_obj']:
+        #     vRelY = self.format_value(json_data['Dynamic_obj'].get('Vy_val', 'N/A'))
+
+        #     if vRelY>=0:
+        #         try:
+        #             self.nvRelYLabel.setText(f"vRelY                       : {vRelY:.4f}")
+        #         except (ValueError, TypeError):
+        #             self.nvRelYLabel.setText(f"vRelY                       : {vRelY:.4f}")
+        #     else:
+        #         self.nvRelYLabel.setText(f"vRelY                       : {vRelY:.4f}")
+            self.nvRelYLabel.adjustSize()
+
 
     def _update_tables(self, json_data):
         """Optimized table updates"""
