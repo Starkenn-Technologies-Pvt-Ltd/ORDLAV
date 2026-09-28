@@ -786,7 +786,7 @@ class RadarVisualizerMainWindow(QMainWindow):
             elif json_data['Dynamic_obj'].get('X', 'N/A'):
                 nDistX = self.format_value(json_data['Dynamic_obj'].get('X', 'N/A'),4) 
             else:
-                continue 
+                pass 
 
         if 'Static_obj' in json_data and json_data['Static_obj']:
 
@@ -803,9 +803,9 @@ class RadarVisualizerMainWindow(QMainWindow):
             elif json_data['Static_obj'].get('X', 'N/A'):
                 nDistX = self.format_value(json_data['Static_obj'].get('X', 'N/A'),4) 
             else:
-                continue 
+                pass 
 
-                                       
+
             # self.nDistXLabel.setText(f"distX : {nDistX}")
 
             # nDistY = self.format_value(
