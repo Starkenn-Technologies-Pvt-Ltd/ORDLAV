@@ -1359,10 +1359,7 @@ class RadarVisualizerMainWindow(
 
         try:
 
-            return (
-                f"{float(value):."
-                f"{decimal_places}f}"
-            )
+            return f"{float(value):.{decimal_places}f}"
 
         except (
             ValueError,
@@ -2054,10 +2051,14 @@ class RadarVisualizerMainWindow(
 
             try:
 
-                return (
-                    f"{float(value):."
-                    f"{decimals}f}"
-                )
+                # return (
+                #     f"{float(value):."
+                #     f"{decimals}f}"
+                # )
+
+
+                return f"{float(value):.{decimals}f}"
+
 
             except (
                 ValueError,
