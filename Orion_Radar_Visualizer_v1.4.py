@@ -772,29 +772,59 @@ class RadarVisualizerMainWindow(QMainWindow):
         nClassification = 9999
 
         if 'Dynamic_obj' in json_data and json_data['Dynamic_obj']:
-            nDistX = self.format_value(
-                json_data['Dynamic_obj'].get('x_val', 'N/A'),
-                4
-            )
-            self.nDistXLabel.setText(f"distX : {nDistX}")
 
-            nDistY = self.format_value(
-                json_data['Dynamic_obj'].get('y_val', 'N/A'),
-                4
-            )
-            self.nDistYLabel.setText(f"distY : {nDistY}")
+            if json_data['Dynamic_obj'].get('x_val', 'N/A'):
+                nDistX = self.format_value(json_data['Dynamic_obj'].get('x_val', 'N/A'),4)
+            elif json_data['Dynamic_obj'].get('X_val', 'N/A'):
+                nDistX = self.format_value(json_data['Dynamic_obj'].get('X_val', 'N/A'),4)      
+            elif json_data['Dynamic_obj'].get('distX', 'N/A'):
+                nDistX = self.format_value(json_data['Dynamic_obj'].get('distX', 'N/A'),4)   
+            elif json_data['Dynamic_obj'].get('DistX', 'N/A'):
+                nDistX = self.format_value(json_data['Dynamic_obj'].get('DistX', 'N/A'),4)   
+            elif json_data['Dynamic_obj'].get('x', 'N/A'):
+                nDistX = self.format_value(json_data['Dynamic_obj'].get('x', 'N/A'),4)   
+            elif json_data['Dynamic_obj'].get('X', 'N/A'):
+                nDistX = self.format_value(json_data['Dynamic_obj'].get('X', 'N/A'),4) 
+            else:
+                continue 
 
-            vRelX = self.format_value(
-                json_data['Dynamic_obj'].get('Vx_val', 'N/A'),
-                4
-            )
-            self.nvRelXLabel.setText(f"vRelX : {vRelX}")
+        if 'Static_obj' in json_data and json_data['Static_obj']:
 
-            vRelY = self.format_value(
-                json_data['Dynamic_obj'].get('Vy_val', 'N/A'),
-                4
-            )
-            self.nvRelYLabel.setText(f"vRelY : {vRelY}")
+            if json_data['Static_obj'].get('x_val', 'N/A'):
+                nDistX = self.format_value(json_data['Static_obj'].get('x_val', 'N/A'),4)
+            elif json_data['Static_obj'].get('X_val', 'N/A'):
+                nDistX = self.format_value(json_data['Static_obj'].get('X_val', 'N/A'),4)      
+            elif json_data['Static_obj'].get('distX', 'N/A'):
+                nDistX = self.format_value(json_data['Static_obj'].get('distX', 'N/A'),4)   
+            elif json_data['Static_obj'].get('DistX', 'N/A'):
+                nDistX = self.format_value(json_data['Static_obj'].get('DistX', 'N/A'),4)   
+            elif json_data['Static_obj'].get('x', 'N/A'):
+                nDistX = self.format_value(json_data['Static_obj'].get('x', 'N/A'),4)   
+            elif json_data['Static_obj'].get('X', 'N/A'):
+                nDistX = self.format_value(json_data['Static_obj'].get('X', 'N/A'),4) 
+            else:
+                continue 
+
+                                       
+            # self.nDistXLabel.setText(f"distX : {nDistX}")
+
+            # nDistY = self.format_value(
+            #     json_data['Dynamic_obj'].get('y_val', 'N/A'),
+            #     4
+            # )
+            # self.nDistYLabel.setText(f"distY : {nDistY}")
+
+            # vRelX = self.format_value(
+            #     json_data['Dynamic_obj'].get('Vx_val', 'N/A'),
+            #     4
+            # )
+            # self.nvRelXLabel.setText(f"vRelX : {vRelX}")
+
+            # vRelY = self.format_value(
+            #     json_data['Dynamic_obj'].get('Vy_val', 'N/A'),
+            #     4
+            # )
+            # self.nvRelYLabel.setText(f"vRelY : {vRelY}")
 
 
         # if 'Dynamic_obj' in json_data and json_data['Dynamic_obj']:
