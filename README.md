@@ -12,12 +12,38 @@ CAN source ──▶ CAN_Frame_Processor_v1.4.py ──localhost:5001──▶ O
 
 ## Setup
 
+Always install into a virtualenv. Besides the usual isolation, it sidesteps a
+trap specific to this project: PyPI hosts an unrelated package named `can`
+alongside `python-can`, and if the wrong one is installed globally the app
+fails with `module 'can' has no attribute 'interface'`. A fresh venv cannot
+inherit that.
+
+### Windows
+
+```powershell
+cd D:\RADAR\GitHub\ORDLAV
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+Calling `.\.venv\Scripts\python.exe` directly avoids `Activate.ps1`, which
+PowerShell's execution policy often blocks. Verify the right CAN package:
+
+```powershell
+.\.venv\Scripts\python.exe -c "import can; print(can.__version__, can.__file__)"
+```
+
+That must print a `python-can` 4.x version and a path inside `.venv`.
+
+### macOS / Linux
+
 ```bash
 python3.12 -m venv ~/.venvs/ordlav
 ~/.venvs/ordlav/bin/python -m pip install -r requirements.txt
 ```
 
-Two macOS gotchas, both of which stop the GUI with
+Two macOS-only gotchas, both of which stop the GUI with
 `Could not find the Qt platform plugin "cocoa"`:
 
 1. **Keep the virtualenv outside `~/Desktop`, `~/Documents` and `~/Downloads`.**
@@ -32,7 +58,28 @@ Two macOS gotchas, both of which stop the GUI with
    carries a `sys_platform == "darwin"` marker because Windows only publishes
    5.15.2 of that package — pinning it everywhere breaks the Windows install.
 
-Substitute `~/.venvs/ordlav/bin/python` for `python` in the commands below.
+In the commands below, substitute your interpreter —
+`.\.venv\Scripts\python.exe` on Windows, `~/.venvs/ordlav/bin/python` on
+macOS — wherever `python` appears.
+
+## Running without the radar bench
+
+A laptop has no Kvaser interface, so the default source cannot open. Replay a
+logged run instead — generate one first if you have no bench log to hand:
+
+```powershell
+python tools\make_sample_log.py -o sample_log.csv -n 200
+python launchVis.py --source replay:sample_log.csv --no-raw-log --wait-for-visualizer 15
+```
+
+Set `ORDLAV_SOURCE` to avoid repeating `--source`:
+
+```powershell
+$env:ORDLAV_SOURCE = "replay:sample_log.csv"     # PowerShell
+```
+
+`--source virtual` opens an empty in-process bus, which is useful for checking
+that the GUI and socket come up without any data flowing.
 
 ## Running
 
