@@ -1,0 +1,9 @@
+python-can>=4.3
+PyQt5==5.15.11
+# Pinned: the PyQt5-Qt5 5.15.19 wheel ships a macOS platform plugin that Qt
+# refuses to load ("Could not find the Qt platform plugin cocoa"), so the GUI
+# cannot start. 5.15.16 is the newest build that works on Apple silicon.
+PyQt5-Qt5==5.15.16
+numpy>=1.24
+pandas>=2.0
+matplotlib>=3.7

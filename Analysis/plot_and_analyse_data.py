@@ -5,8 +5,15 @@ import matplotlib.pyplot as plt
 # USER OPTIONS  ← change these as needed
 # ═════════════════════════════════════════════
 
-# Folder containing CSV files to process (use '.' for current directory)
-CSV_FOLDER = '.'
+# Folder containing CSV files to process. Defaults to the folder this script
+# lives in; pass a path on the command line to use another one.
+#
+# NOTE: every CSV processed is MOVED into its own results folder, so point
+# this at a directory holding only the parsed CSVs you want analysed.
+import os as _os
+import sys as _sys
+
+CSV_FOLDER = _sys.argv[1] if len(_sys.argv) > 1 else _os.path.dirname(_os.path.abspath(__file__))
 
 # ═════════════════════════════════════════════
 
@@ -21,6 +28,7 @@ csv_files = sorted(glob.glob(os.path.join(CSV_FOLDER, '*.csv')))
 if not csv_files:
     raise FileNotFoundError(f"No CSV files found in folder: '{CSV_FOLDER}'")
 
+print(f"Input folder: {os.path.abspath(CSV_FOLDER)}")
 print(f"Found {len(csv_files)} CSV file(s): {[os.path.basename(f) for f in csv_files]}")
 
 for CSV_FILE in csv_files:
@@ -29,7 +37,8 @@ for CSV_FILE in csv_files:
     print(f"{'='*70}")
 
     FILE_PREFIX = os.path.splitext(os.path.basename(CSV_FILE))[0] + '_'
-    FOLDER_NAME = os.path.splitext(os.path.basename(CSV_FILE))[0]
+    FOLDER_NAME = os.path.join(os.path.dirname(os.path.abspath(CSV_FILE)),
+                               os.path.splitext(os.path.basename(CSV_FILE))[0])
     os.makedirs(FOLDER_NAME, exist_ok=True)
 
     df = pd.read_csv(CSV_FILE)
@@ -44,6 +53,10 @@ for CSV_FILE in csv_files:
     missing_cols = [c for c in REQUIRED_COLS if c not in df.columns]
     if missing_cols:
         print(f'  SKIPPED — missing required columns: {missing_cols}')
+        try:
+            os.rmdir(FOLDER_NAME)  # only succeeds while it is still empty
+        except OSError:
+            pass
         continue
 
     # ─────────────────────────────────────────────
@@ -81,13 +94,15 @@ for CSV_FILE in csv_files:
         dfa = dfa.dropna(subset=[OBJ_X])
         after_nan_drop = len(dfa)
 
-        # 2. Drop rows where dynamic_y is outside ±100 (outliers / invalid detections)
-        dfa = dfa[dfa['dynamic_y'].isna() | dfa['dynamic_y'].between(-100, 100)]
+        # 2. Drop rows where this mode's Y is outside ±100 (outliers / invalid
+        #    detections). Filtering on dynamic_y here would apply the moving
+        #    object's outliers to the static pass as well.
+        dfa = dfa[dfa[OBJ_Y].isna() | dfa[OBJ_Y].between(-100, 100)]
         valid_rows = len(dfa)
 
         dropped_nan   = total_rows - after_nan_drop
         dropped_y_out = after_nan_drop - valid_rows
-        print(f'[{ANALYSIS_MODE.upper()}] Rows total: {total_rows} | After NaN drop: {after_nan_drop} | After ±100 Y filter: {valid_rows} | Dropped (NaN): {dropped_nan} | Dropped (|dynamic_y|>100): {dropped_y_out}')
+        print(f'[{ANALYSIS_MODE.upper()}] Rows total: {total_rows} | After NaN drop: {after_nan_drop} | After ±100 Y filter: {valid_rows} | Dropped (NaN): {dropped_nan} | Dropped (|{OBJ_Y}|>100): {dropped_y_out}')
 
         # Error columns
         dfa['error_x']  = dfa[OBJ_X]  - dfa['HIL1_x']
@@ -112,7 +127,7 @@ for CSV_FILE in csv_files:
             f.write(f'  Analysis mode       : {ANALYSIS_MODE.upper()}\n')
             f.write(f'  Total rows          : {total_rows}\n')
             f.write(f'  Dropped (NaN {OBJ_X}) : {dropped_nan}\n')
-            f.write(f'  Dropped (|dynamic_y|>100): {dropped_y_out}\n')
+            f.write(f'  Dropped (|{OBJ_Y}|>100): {dropped_y_out}\n')
             f.write(f'  Valid rows          : {valid_rows}\n')
             f.write(f'{sep}\n\n')
 
@@ -286,4 +301,3 @@ for CSV_FILE in csv_files:
     plt.close('all')  # free memory between files
 
 print(f"\nAll done. Processed {len(csv_files)} file(s).")
-plt.show()

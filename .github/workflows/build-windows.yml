@@ -1,0 +1,54 @@
+name: Build Windows executable
+
+# PyInstaller cannot cross-compile, so the Windows .exe is built on Windows.
+# Runs on demand and on pushes that touch the application or its packaging.
+on:
+  workflow_dispatch:
+  push:
+    branches: ['**']
+    paths:
+      - '**.py'
+      - 'packaging/**'
+      - 'requirements.txt'
+      - '.github/workflows/build-windows.yml'
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Smoke test the pipeline
+        # Exercises capture, frame parsing and CSV logging without hardware.
+        run: |
+          python tools/make_sample_log.py -o sample_log.csv -n 60
+          python ordlav_app.py --mode processor --source replay:sample_log.csv --speed 0 --no-raw-log
+
+      - name: Build ORDLAV.exe
+        run: pyinstaller packaging/ORDLAV.spec --noconfirm
+
+      - name: Check the executable was produced
+        shell: pwsh
+        run: |
+          $exe = 'dist/ORDLAV.exe'
+          if (-not (Test-Path $exe)) { throw "ORDLAV.exe was not produced" }
+          $size = (Get-Item $exe).Length
+          Write-Host "ORDLAV.exe built: $([math]::Round($size/1MB,1)) MB"
+          if ($size -lt 5MB) { throw "ORDLAV.exe looks truncated" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ORDLAV-windows
+          path: dist/ORDLAV.exe
+          if-no-files-found: error
