@@ -27,8 +27,10 @@ Two macOS gotchas, both of which stop the GUI with
    though every plugin file is present. The project itself can live on the
    Desktop; only the virtualenv has to move. (Granting the terminal
    Full Disk Access in System Settings → Privacy & Security works too.)
-2. **`PyQt5-Qt5` is pinned to 5.15.16.** The 5.15.19 wheel ships a macOS
-   platform plugin that fails to load on Apple silicon.
+2. **`PyQt5-Qt5` is pinned to 5.15.16 on macOS only.** The 5.15.19 wheel
+   ships a macOS platform plugin that fails to load on Apple silicon. The pin
+   carries a `sys_platform == "darwin"` marker because Windows only publishes
+   5.15.2 of that package — pinning it everywhere breaks the Windows install.
 
 Substitute `~/.venvs/ordlav/bin/python` for `python` in the commands below.
 

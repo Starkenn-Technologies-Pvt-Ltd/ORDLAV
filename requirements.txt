@@ -1,9 +1,13 @@
 python-can>=4.3
 PyQt5==5.15.11
-# Pinned: the PyQt5-Qt5 5.15.19 wheel ships a macOS platform plugin that Qt
-# refuses to load ("Could not find the Qt platform plugin cocoa"), so the GUI
-# cannot start. 5.15.16 is the newest build that works on Apple silicon.
-PyQt5-Qt5==5.15.16
+
+# macOS/Apple silicon only: the PyQt5-Qt5 5.15.19 wheel ships a platform plugin
+# that Qt refuses to load, so the GUI cannot start ("Could not find the Qt
+# platform plugin cocoa"). 5.15.16 is the newest build that works there.
+# Windows only publishes 5.15.2, so this pin must not apply to it — PyQt5
+# itself requires >=5.15.2,<5.16 and resolves correctly on its own elsewhere.
+PyQt5-Qt5==5.15.16 ; sys_platform == "darwin"
+
 numpy>=1.24
 pandas>=2.0
 matplotlib>=3.7
