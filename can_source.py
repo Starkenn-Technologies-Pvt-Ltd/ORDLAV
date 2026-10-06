@@ -26,6 +26,44 @@ import time
 
 import can
 
+# Import what we actually use rather than reaching through the package at call
+# time. PyPI hosts an unrelated project also called "can", so `pip install can`
+# (instead of python-can) yields a module without any of this - better to find
+# out at import, with a message that says what to do, than to fail later with
+# "module 'can' has no attribute 'interface'".
+try:
+    from can.interface import Bus as CanBus
+    from can import Message as CanMessage
+except (ImportError, AttributeError) as exc:
+    CanBus = None
+    CanMessage = None
+    _CAN_IMPORT_ERROR = exc
+else:
+    _CAN_IMPORT_ERROR = None
+
+
+def describe_can_package():
+    """Where the imported 'can' came from, for diagnostics."""
+    return (f"'can' imported from {getattr(can, '__file__', '<unknown>')} "
+            f"(version {getattr(can, '__version__', 'unknown')})")
+
+
+def require_python_can():
+    """Raise with remediation if the 'can' on this machine is not python-can."""
+    if CanBus is not None:
+        return
+    raise ImportError(
+        "python-can is required but could not be imported ({0}).\n"
+        "  {1}\n"
+        "  PyPI also hosts an unrelated package named 'can'. If that one got "
+        "installed, replace it:\n"
+        "      pip uninstall -y can\n"
+        "      pip install -r requirements.txt\n"
+        "  Then check with:  python -c \"import can; print(can.__version__, can.__file__)\""
+        .format(_CAN_IMPORT_ERROR, describe_can_package())
+    )
+
+
 # A gap longer than this in the log is collapsed, so a recording with a long
 # idle stretch does not stall the replay.
 MAX_REPLAY_GAP_S = 0.5
@@ -57,6 +95,7 @@ class CsvReplayBus:
     """
 
     def __init__(self, path, speed=1.0, loop=False, can_filters=None):
+        require_python_can()
         self.path = path
         self.speed = float(speed)
         self.loop = bool(loop)
@@ -117,7 +156,7 @@ class CsvReplayBus:
                 if allowed is not None and arbitration_id not in allowed:
                     continue
                 messages.append(
-                    can.Message(
+                    CanMessage(
                         timestamp=timestamp,
                         arbitration_id=arbitration_id,
                         dlc=dlc or len(data),
@@ -178,6 +217,7 @@ def open_source(spec=None, channel="0", bitrate=500000, can_filters=None,
     Raises on failure so the caller can report it; never returns None.
     """
     spec = spec or default_source()
+    require_python_can()
 
     if spec.startswith("replay:") or spec.endswith(".csv"):
         path = spec[len("replay:"):] if spec.startswith("replay:") else spec
@@ -189,7 +229,7 @@ def open_source(spec=None, channel="0", bitrate=500000, can_filters=None,
     kwargs = {"channel": channel, "interface": spec}
     if spec != "virtual":
         kwargs["bitrate"] = bitrate
-    bus = can.interface.Bus(**kwargs)
+    bus = CanBus(**kwargs)
     if can_filters:
         bus.set_filters(can_filters)
     return bus
