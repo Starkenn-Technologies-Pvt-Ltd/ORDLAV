@@ -78,6 +78,68 @@ KEEPALIVE_MESSAGE = b'{"_keepalive":1}\n'
 # Per-frame tracing is expensive at radar frame rates; opt in with ORDLAV_DEBUG=1
 DEBUG = os.environ.get("ORDLAV_DEBUG", "").lower() in ("1", "true", "yes")
 
+# Messages grouped the way an operator thinks about them. A whole group going
+# missing is the useful signal: "no ground truth" matters more than "0x101 is
+# absent". Several documented messages turned out not to be implemented on the
+# bench unit, which was invisible until this was surfaced.
+MESSAGE_GROUPS = {
+    "objects": [OR_FCWS_MOVING_OBJ, OR_FCWS_STATIC_OBJ],
+    "objects 2/3": [OR_FCWS_MOVING_OBJ_2, OR_FCWS_MOVING_OBJ_3,
+                    OR_FCWS_STATIC_OBJ_2, OR_FCWS_STATIC_OBJ_3],
+    "counts": [OR_FCWS_DYNAMIC_COUNT, OR_FCWS_STATIC_COUNT],
+    "alarm": [OR_ECU_ALARM, OR_FCWS_THRESH],
+    "ttc": [OR_TIME_MSG],
+    "ego speed": [VEH_SPEED],
+    "ego yaw": [VEH_YAW],
+    "HIL truth": [HIL_100, HIL_101, HIL_102, HIL_103],
+    "radar stream": [OR_MRR_DATA_HEADER, OR_MRR_POINT_CLOUD,
+                     OR_MRR_CLUSTERS, OR_MRR_TRACKERS],
+}
+
+
+class BusMonitor:
+    """Tracks which expected messages are actually arriving, and how often."""
+
+    # A group is called silent once nothing in it has arrived for this long.
+    SILENT_AFTER_S = 2.0
+
+    def __init__(self):
+        self.counts = {}
+        self.last_seen = {}
+        # Rates are measured on the bus clock, not the wall clock, so a log
+        # replayed at 20x still reports the rates it was recorded at.
+        self.first_timestamp = None
+        self.latest_timestamp = None
+
+    def record(self, can_id, timestamp):
+        self.counts[can_id] = self.counts.get(can_id, 0) + 1
+        self.last_seen[can_id] = timestamp
+        if self.first_timestamp is None:
+            self.first_timestamp = timestamp
+        self.latest_timestamp = timestamp
+
+    def snapshot(self):
+        """Per-group state: live with a rate, silent, or never seen at all."""
+        if self.first_timestamp is None:
+            return {}
+        now = self.latest_timestamp
+        elapsed = max(now - self.first_timestamp, 1e-6)
+        out = {}
+        for name, ids in MESSAGE_GROUPS.items():
+            total = sum(self.counts.get(i, 0) for i in ids)
+            if not total:
+                out[name] = {"state": "never"}
+                continue
+            newest = max((self.last_seen.get(i, 0) for i in ids))
+            age = now - newest
+            out[name] = {
+                "state": "silent" if age > self.SILENT_AFTER_S else "live",
+                "hz": round(total / elapsed, 1),
+                "age": round(age, 1),
+            }
+        return out
+
+
 class CANFrameProcessor:
     """
     High-performance CAN frame processor that collects CAN messages into frames
@@ -106,6 +168,7 @@ class CANFrameProcessor:
 
         # The radar sends no object ID, so identities are assigned here by
         # associating each frame's tracks with the previous frame's.
+        self.bus_monitor = BusMonitor()
         self.tracker = ObjectTracker()
         # The CAN object slots are ranked by proximity, so slot 1 becomes
         # slot 2 the moment something closer appears. They are positions in a
@@ -576,6 +639,7 @@ class CANFrameProcessor:
                 # Update statistics
                 with self.stats_lock:
                     self.messages_received += 1
+                self.bus_monitor.record(message.arbitration_id, message.timestamp)
 
                 # Extract message fields
                 timestamp = message.timestamp
@@ -709,7 +773,8 @@ class CANFrameProcessor:
             "Static_objects": {},
             "HIL_Targets": {},
             "Time_msg": {},
-            "Vehicle": {}
+            "Vehicle": {},
+            "Bus": {}
         }
 
         try:
@@ -873,6 +938,7 @@ class CANFrameProcessor:
             for track, track_id in zip(Track_Objects, assigned):
                 track['T_ID'] = track_id
 
+            result["Bus"] = self.bus_monitor.snapshot()
             result["Point_cloud"] = {"Detect_Points": Detect_Points}
             result["Tracked_obj"] = {"Track_Objects": Track_Objects}
       

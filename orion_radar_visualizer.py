@@ -541,6 +541,12 @@ class RadarPlotWidget(QWidget):
         painter.setPen(Qt.NoPen)
         painter.drawPolygon(QPolygonF([tip, left, right]))
 
+    # Shortest range the bench radar has been observed to report. Below this
+    # it returns a byte-identical value, so it is a clamp rather than a
+    # measurement - a reading at the floor means "this close or closer", not a
+    # distance. Confirm against the sensor's minimum-range specification.
+    SENSOR_MIN_RANGE_M = 0.6
+
     # Default footprint when the radar reports no size for an object.
     DEFAULT_LENGTH_M = 4.5
     DEFAULT_WIDTH_M = 1.8
@@ -909,6 +915,7 @@ class RadarVisualizerMainWindow(QMainWindow):
         self._frames_without_alarm = 0
         self._connected = False
         self._radar_cycle = None
+        self._cycle_ever_nonzero = False
         # When each section last carried data, so a panel can say when the
         # value on it stopped being refreshed.
         self._last_seen = {}
@@ -1079,12 +1086,23 @@ class RadarVisualizerMainWindow(QMainWindow):
             ("ttc", "time to collision (s)"),
             ("yaw", "yaw rate"),
         ])
+        self.bus_card = AttributeCard("Bus health", [
+            ("objects", "objects 1"),
+            ("objects 2/3", "objects 2/3"),
+            ("counts", "object counts"),
+            ("alarm", "alarm + thresholds"),
+            ("ttc", "time to collision"),
+            ("ego speed", "ego speed"),
+            ("ego yaw", "ego yaw"),
+            ("HIL truth", "HIL ground truth"),
+            ("radar stream", "radar TLV stream"),
+        ])
         self.stream_table = DataTableWidget(
             "Stream", ["FRAMES", "FPS", "RADAR CYCLE"])
 
         for card in (self.counts_table, self.counts_reported, self.object_card,
                      self.raw_card, self.dynamic_alarm_table,
-                     self.stream_table):
+                     self.bus_card, self.stream_table):
             layout.addWidget(card)
 
         self._apply_table_accents()
@@ -1189,9 +1207,20 @@ class RadarVisualizerMainWindow(QMainWindow):
 
         self._update_object_card(json_data.get('Dynamic_obj') or {})
         self._update_raw_card(json_data)
+        self._update_bus_card(json_data.get('Bus') or {})
 
         thresholds = json_data.get('Alarm_thresh') or {}
         if thresholds:
+            # An all-zero set means the unit has no thresholds programmed;
+            # showing "0 0 0" reads as real data and hides that.
+            levels = [thresholds.get(k) for k in
+                      ('Level_1_Sta', 'Level_2_Sta', 'Level_3_Sta',
+                       'Level_1_Mov', 'Level_2_Mov', 'Level_3_Mov')]
+            if not any(levels):
+                self.static_alarm_table.update_data(['not set'] * 3)
+                self.dynamic_alarm_table.update_data(['not set'] * 3)
+                return
+
             self.static_alarm_table.update_data([
                 self.format_value(thresholds.get('Level_1_Sta'), 0),
                 self.format_value(thresholds.get('Level_2_Sta'), 0),
@@ -1229,10 +1258,12 @@ class RadarVisualizerMainWindow(QMainWindow):
             and abs(float(c.get('C_Y', 0)) - dist_x) < 3.0
             for c in plot.clusters)
 
+        at_floor = dist_x <= plot.SENSOR_MIN_RANGE_M
         self.object_card.update_values({
             # Not transmitted by the radar - see the DBC; left blank on purpose
             "objId": None,
-            "distX": f"{dist_x:.2f}",
+            "distX": (f"{dist_x:.2f}  (at sensor minimum)" if at_floor
+                      else f"{dist_x:.2f}"),
             "distY": f"{dist_y:.2f}",
             "vrelX": f"{vrel_x:.2f}",
             "vrelY": f"{vrel_y:.2f}",
@@ -1264,7 +1295,26 @@ class RadarVisualizerMainWindow(QMainWindow):
             "yaw": vehicle.get('yaw_rate'),
         }
         self.raw_card.update_values(values)
-        self._radar_cycle = (json_data.get('Object_counts') or {}).get('dynamic_cycle')
+        cycle = (json_data.get('Object_counts') or {}).get('dynamic_cycle')
+        self._radar_cycle = cycle
+        if cycle:
+            self._cycle_ever_nonzero = True
+
+    def _update_bus_card(self, bus):
+        """Which expected messages are arriving. A group that is never seen is
+        a missing feature, not a momentary gap."""
+        if not bus:
+            return
+        values = {}
+        for name, entry in bus.items():
+            state = entry.get("state")
+            if state == "never":
+                values[name] = "not sent"
+            elif state == "silent":
+                values[name] = f"silent {entry.get('age', 0):.0f}s"
+            else:
+                values[name] = f"{entry.get('hz', 0):.1f} Hz"
+        self.bus_card.update_values(values)
 
     # How long a panel may go without an update before it is called stale.
     STALE_AFTER_S = 1.5
@@ -1293,10 +1343,17 @@ class RadarVisualizerMainWindow(QMainWindow):
                 fps = (len(self._frame_times) - 1) / span
         self._refresh_staleness()
 
+        # A counter stuck at zero is not implemented on this unit, which is
+        # worth distinguishing from one that is genuinely counting.
         cycle = getattr(self, '_radar_cycle', None)
+        if cycle in (None, ''):
+            cycle_text = "—"
+        elif not getattr(self, '_cycle_ever_nonzero', False):
+            cycle_text = "not sent"
+        else:
+            cycle_text = f"{int(cycle):,}"
         self.stream_table.update_data([
-            f"{self._frames_seen:,}", f"{fps:.1f}",
-            "—" if cycle in (None, '') else f"{int(cycle):,}"])
+            f"{self._frames_seen:,}", f"{fps:.1f}", cycle_text])
 
     @staticmethod
     def _restyle(widget):
