@@ -772,6 +772,10 @@ class DataTableWidget(QFrame):
         title_label.setObjectName("cardTitle")
         title_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         layout.addWidget(title_label)
+        self._title = title_label
+        self._base_title = title.upper()
+        self._accent = QBrush(QColor('#E6EDF7'))
+        self._stale_colour = QBrush(QColor('#6A7A92'))
 
         self.table = QTableWidget(1, len(headers))
         self.table.setHorizontalHeaderLabels(headers)
@@ -797,9 +801,27 @@ class DataTableWidget(QFrame):
             if column < len(self.table_items):
                 self.table_items[column].setText(str(value))
 
-    def set_accent(self, colour):
+    def set_stale(self, stale, age=None):
+        """Mark the card as showing a value that stopped arriving.
+
+        Object messages are sent only while the radar has something to report,
+        so a panel can keep displaying a reading long after the object has
+        gone. Holding the last value silently makes a stale number
+        indistinguishable from a live one.
+        """
+        self._title.setText(self._base_title if not stale
+                            else f"{self._base_title}   ·   STALE {age:.0f}s")
+        self._title.setProperty("stale", "yes" if stale else "no")
+        self._title.style().unpolish(self._title)
+        self._title.style().polish(self._title)
         for item in self.table_items:
-            item.setForeground(QBrush(colour))
+            item.setForeground(QBrush(self._stale_colour if stale
+                                      else self._accent))
+
+    def set_accent(self, colour):
+        self._accent = QBrush(colour)
+        for item in self.table_items:
+            item.setForeground(self._accent)
 
 
 class AttributeCard(QFrame):
@@ -821,6 +843,8 @@ class AttributeCard(QFrame):
         title_label = QLabel(title.upper())
         title_label.setObjectName("cardTitle")
         layout.addWidget(title_label)
+        self._title = title_label
+        self._base_title = title.upper()
 
         self.value_labels = {}
         for key, caption in fields:
@@ -844,6 +868,17 @@ class AttributeCard(QFrame):
             self.value_labels[key] = value
 
         self.setLayout(layout)
+
+    def set_stale(self, stale, age=None):
+        self._title.setText(self._base_title if not stale
+                            else f"{self._base_title}   ·   STALE {age:.0f}s")
+        self._title.setProperty("stale", "yes" if stale else "no")
+        self._title.style().unpolish(self._title)
+        self._title.style().polish(self._title)
+        for label in self.value_labels.values():
+            label.setProperty("stale", "yes" if stale else "no")
+            label.style().unpolish(label)
+            label.style().polish(label)
 
     def update_values(self, values):
         for key, label in self.value_labels.items():
@@ -874,6 +909,9 @@ class RadarVisualizerMainWindow(QMainWindow):
         self._frames_without_alarm = 0
         self._connected = False
         self._radar_cycle = None
+        # When each section last carried data, so a panel can say when the
+        # value on it stopped being refreshed.
+        self._last_seen = {}
 
         self.setup_ui()
 
@@ -1137,6 +1175,13 @@ class RadarVisualizerMainWindow(QMainWindow):
                 self.format_value(dynamic_obj.get('Vy_val')),
             ])
 
+        now = time.monotonic()
+        for key, card_key in (('Dynamic_obj', 'dynamic'),
+                              ('Static_obj', 'static'),
+                              ('Alarm_thresh', 'thresholds')):
+            if json_data.get(key):
+                self._last_seen[card_key] = now
+
         counts = json_data.get('Object_counts') or {}
         if counts:
             self.counts_reported.update_data([
@@ -1221,6 +1266,21 @@ class RadarVisualizerMainWindow(QMainWindow):
         self.raw_card.update_values(values)
         self._radar_cycle = (json_data.get('Object_counts') or {}).get('dynamic_cycle')
 
+    # How long a panel may go without an update before it is called stale.
+    STALE_AFTER_S = 1.5
+
+    def _refresh_staleness(self):
+        """Age out panels whose message has stopped arriving."""
+        now = time.monotonic()
+        for key, card in (('dynamic', self.object_card),
+                          ('static', self.static_obj_table),
+                          ('thresholds', self.dynamic_alarm_table)):
+            last = self._last_seen.get(key)
+            if last is None:
+                continue
+            age = now - last
+            card.set_stale(age > self.STALE_AFTER_S, age)
+
     def refresh_status(self):
         """Clock, frame counter and measured frame rate."""
         now = datetime.datetime.now()
@@ -1231,6 +1291,8 @@ class RadarVisualizerMainWindow(QMainWindow):
             span = self._frame_times[-1] - self._frame_times[0]
             if span > 0:
                 fps = (len(self._frame_times) - 1) / span
+        self._refresh_staleness()
+
         cycle = getattr(self, '_radar_cycle', None)
         self.stream_table.update_data([
             f"{self._frames_seen:,}", f"{fps:.1f}",
@@ -1307,6 +1369,8 @@ QHeaderView::section {{ background-color: transparent; color: {t['text_dim']};
 #attrName {{ font-size: 11px; color: {t['text_dim']}; }}
 #attrValue {{ font-size: 12px; font-weight: 600; color: {t['text_bright']}; }}
 #attrValue[missing="yes"] {{ color: {t['text_dim']}; font-weight: 400; }}
+#attrValue[stale="yes"] {{ color: {t['text_dim']}; font-weight: 400; }}
+#cardTitle[stale="yes"] {{ color: {t['alarm_2']}; }}
 QToolTip {{ background-color: {t['panel_bg']}; color: {t['text_bright']};
             border: 1px solid {t['panel_border']}; padding: 4px; }}
 QScrollBar:vertical, QScrollBar:horizontal {{ width: 0px; height: 0px; }}
