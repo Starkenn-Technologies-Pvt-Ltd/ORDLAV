@@ -770,13 +770,12 @@ class CANFrameProcessor:
                         x_val, y_val, Vx_val, Vy_val = parsed_data
                         payload = {"slot": slot, "x_val": x_val, "y_val": y_val,
                                    "Vx_val": Vx_val, "Vy_val": Vy_val}
+                        payload.update(self.object_raw_counts(data))
                         result[f"{kind}_objects"][slot] = payload
                         if slot == 1:
                             # Closest object keeps its original key so existing
                             # consumers and the wide CSV are unaffected.
-                            result[f"{kind}_obj"] = {
-                                "x_val": x_val, "y_val": y_val,
-                                "Vx_val": Vx_val, "Vy_val": Vy_val}
+                            result[f"{kind}_obj"] = dict(payload)
 
                 elif can_id in ('100', '101', '102', '103'):
                     target = int(can_id, 16) - 0xFF   # 0x100 -> 1
@@ -944,6 +943,21 @@ class CANFrameProcessor:
         except Exception as e:
             print(f"Error parsing {label}:{hex_string}: {e}")
             return None
+
+    def object_raw_counts(self, hex_string):
+        """Unscaled LSB counts for the object layout.
+
+        Carried alongside the metre values so a suspect reading can be checked
+        against the DBC scaling on the spot, without going back to the log.
+        """
+        try:
+            data = self._to_bytes(hex_string)
+            if len(data) < 6:
+                return {}
+            return {f"{name}_raw": self._bits(data, start, length)
+                    for name, (start, length, _, _) in self.OBJECT_SIGNALS.items()}
+        except Exception:
+            return {}
 
     def parse_590(self, hex_string):
         """Closest stationary object."""

@@ -873,6 +873,7 @@ class RadarVisualizerMainWindow(QMainWindow):
         self._frames_seen = 0
         self._frames_without_alarm = 0
         self._connected = False
+        self._radar_cycle = None
 
         self.setup_ui()
 
@@ -1028,10 +1029,23 @@ class RadarVisualizerMainWindow(QMainWindow):
             ("classification", "classification"),
             ("size", "length × width (m)"),
         ])
-        self.stream_table = DataTableWidget("Stream", ["FRAMES", "FPS"])
+        # Unscaled LSB counts straight off the bus, so a suspect reading can
+        # be checked against the DBC scaling without opening the log.
+        self.raw_card = AttributeCard("Raw signal - moving object 1", [
+            ("x_raw", "distX raw (LSB)"),
+            ("x_check", "0.032 x raw - 60.8"),
+            ("y_raw", "distY raw (LSB)"),
+            ("y_check", "0.064 x raw - 131.072"),
+            ("vx_raw", "vrelX raw (LSB)"),
+            ("vy_raw", "vrelY raw (LSB)"),
+            ("ttc", "time to collision (s)"),
+            ("yaw", "yaw rate"),
+        ])
+        self.stream_table = DataTableWidget(
+            "Stream", ["FRAMES", "FPS", "RADAR CYCLE"])
 
         for card in (self.counts_table, self.counts_reported, self.object_card,
-                     self.static_obj_table, self.dynamic_alarm_table,
+                     self.raw_card, self.dynamic_alarm_table,
                      self.stream_table):
             layout.addWidget(card)
 
@@ -1129,6 +1143,7 @@ class RadarVisualizerMainWindow(QMainWindow):
                 counts.get('dynamic', '—'), counts.get('static', '—')])
 
         self._update_object_card(json_data.get('Dynamic_obj') or {})
+        self._update_raw_card(json_data)
 
         thresholds = json_data.get('Alarm_thresh') or {}
         if thresholds:
@@ -1185,6 +1200,27 @@ class RadarVisualizerMainWindow(QMainWindow):
                      else f"{length:.1f} × {width:.1f}  (default)"),
         })
 
+    def _update_raw_card(self, json_data):
+        """Unscaled counts plus the DBC arithmetic applied to them."""
+        payload = json_data.get('Dynamic_obj') or {}
+        timing = json_data.get('Time_msg') or {}
+        vehicle = json_data.get('Vehicle') or {}
+
+        x_raw = payload.get('x_raw')
+        y_raw = payload.get('y_raw')
+        values = {
+            "x_raw": x_raw,
+            "x_check": f"{0.032 * x_raw - 60.8:.3f} m" if x_raw is not None else None,
+            "y_raw": y_raw,
+            "y_check": f"{0.064 * y_raw - 131.072:.3f} m" if y_raw is not None else None,
+            "vx_raw": payload.get('vx_raw'),
+            "vy_raw": payload.get('vy_raw'),
+            "ttc": timing.get('ttc'),
+            "yaw": vehicle.get('yaw_rate'),
+        }
+        self.raw_card.update_values(values)
+        self._radar_cycle = (json_data.get('Object_counts') or {}).get('dynamic_cycle')
+
     def refresh_status(self):
         """Clock, frame counter and measured frame rate."""
         now = datetime.datetime.now()
@@ -1195,7 +1231,10 @@ class RadarVisualizerMainWindow(QMainWindow):
             span = self._frame_times[-1] - self._frame_times[0]
             if span > 0:
                 fps = (len(self._frame_times) - 1) / span
-        self.stream_table.update_data([f"{self._frames_seen:,}", f"{fps:.1f}"])
+        cycle = getattr(self, '_radar_cycle', None)
+        self.stream_table.update_data([
+            f"{self._frames_seen:,}", f"{fps:.1f}",
+            "—" if cycle in (None, '') else f"{int(cycle):,}"])
 
     @staticmethod
     def _restyle(widget):
