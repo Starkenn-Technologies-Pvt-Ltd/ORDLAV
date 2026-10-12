@@ -202,6 +202,53 @@ straight back. To generate a synthetic one — a target closing from 80 m to
 ~/.venvs/ordlav/bin/python tools/make_sample_log.py -o sample_log.csv -n 200
 ```
 
+## Object identity and continuity
+
+No documented message carries an object ID, so `object_tracker.py` assigns one
+during capture by associating each frame's tracks with the previous frame's.
+The id appears on each track in the view and in the `assoc_id` column of
+`objects_*.csv`.
+
+Read the distinction carefully: this measures the **radar's detection
+stability** — whether one physical target stays one continuously reported
+object — which is what a split or a dropout actually is. It does **not** audit
+the sensor's own ID handling, because the sensor exposes no ID to audit.
+
+```bash
+python tools/track_continuity.py objects_*.csv
+```
+
+reports, per identity, its lifetime, dropouts and range covered, then flags:
+
+* **SPLIT** — two identities coexisting within a few metres, i.e. one target
+  reported as two
+* **CHURN** — identities that lasted only a frame or two
+* **dropouts** — gaps inside an identity's lifetime
+
+## Validation against ground truth
+
+```bash
+python Analysis/ncap_report.py objects_*.csv --scenario CCRm --source track
+```
+
+Produces, per run, each kinematic channel plotted against ground truth with the
+error beneath it, plus detection metrics (detection rate, first-detection
+range, longest dropout) and per-channel error statistics.
+
+**On pass/fail.** The Euro NCAP AEB protocols (Car-to-Car v4.3.1, VRU v4.5.1)
+grade *system-level* behaviour — whether the vehicle avoids the collision —
+not sensor accuracy. They cannot supply the tolerance corridor, which has to
+come from the radar requirement specification. Without `--tolerances` the
+report measures the error and makes no judgement; it prints observed error
+percentiles, which are the right input for *writing* a requirement. A
+requirement derived from one run and then used to grade that same run proves
+nothing. Once limits exist, copy `Analysis/tolerances.example.json` and pass it
+with `--tolerances`.
+
+What the protocols do give you is the scenario set; tag each run with
+`--scenario` (CCRs, CCRm, CCRb, CPNA, CPNC, CPFA, CPLA, CBNA, CBLA) so results
+are comparable across the matrix.
+
 ## Analysis
 
 Compares radar objects (0x510 / 0x590) against HIL target 1 (0x100) and writes

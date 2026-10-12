@@ -1,0 +1,7 @@
+{
+  "_comment": "Per-channel accuracy limits for radar validation. Copy to tolerances.json and fill in from the Starkenn radar requirement specification. Euro NCAP does NOT define these: its AEB protocols grade vehicle-level collision avoidance, not sensor accuracy. Values are the maximum permitted absolute error.",
+  "distX": 1.0,
+  "distY": 0.5,
+  "vrelX": 0.5,
+  "vrelY": 0.3
+}

@@ -22,6 +22,7 @@ import argparse
 import os
 
 import can_source
+from object_tracker import ObjectTracker
 
 import sys
 if sys.platform.startswith("win") and hasattr(sys.stdout, "reconfigure"):
@@ -84,6 +85,11 @@ class CANFrameProcessor:
 
         # Set once a finite source (a replayed log) has been fully consumed
         self.source_exhausted = threading.Event()
+
+        # The radar sends no object ID, so identities are assigned here by
+        # associating each frame's tracks with the previous frame's.
+        self.tracker = ObjectTracker()
+        self._frame_counter = 0
 
         # Frame processing
         self.frame_queue = queue.Queue(maxsize=1000)
@@ -203,8 +209,9 @@ class CANFrameProcessor:
     # positive), distY lateral (right positive). The radar's TLV stream uses
     # the opposite axis naming, so it is converted here rather than leaving
     # every consumer to remember which source means what.
+    # assoc_id is assigned by object_tracker, not reported by the radar.
     OBJECTS_COLUMNS = [
-        'frame_num', 'timestamp', 'source', 'obj_index',
+        'frame_num', 'timestamp', 'source', 'obj_index', 'assoc_id',
         'distX', 'distY', 'vrelX', 'vrelY',
         'extentX', 'extentY', 'doppler', 'peak',
     ]
@@ -249,8 +256,8 @@ class CANFrameProcessor:
         rows = []
 
         def add(source, index, distX, distY, vrelX='', vrelY='',
-                extentX='', extentY='', doppler='', peak=''):
-            rows.append([frame_num, timestamp, source, index,
+                extentX='', extentY='', doppler='', peak='', assoc_id=''):
+            rows.append([frame_num, timestamp, source, index, assoc_id,
                          distX, distY, vrelX, vrelY,
                          extentX, extentY, doppler, peak])
 
@@ -269,7 +276,8 @@ class CANFrameProcessor:
         for index, track in enumerate(tracks):
             add('track', index,
                 self._as_float(track.get('T_Y')), self._as_float(track.get('T_X')),
-                self._as_float(track.get('T_Vy')), self._as_float(track.get('T_Vx')))
+                self._as_float(track.get('T_Vy')), self._as_float(track.get('T_Vx')),
+                assoc_id=track.get('T_ID', ''))
 
         for index, cluster in enumerate(clusters):
             add('cluster', index,
@@ -793,6 +801,19 @@ class CANFrameProcessor:
             # print(f" 📈 Message distribution: {dict(sorted(id_counts.items()))}")
             ##print(" ✅ Frame processing completed\n")
             
+            # Assign a stable identity to each track. T_Y is longitudinal and
+            # T_X lateral, which is the order the tracker expects.
+            self._frame_counter += 1
+            frame_timestamp = frame_data[0]['timestamp'] if frame_data else None
+            assigned = self.tracker.update(
+                [(t['T_Y'], t['T_X'], t.get('T_Vy', 0.0), t.get('T_Vx', 0.0))
+                 for t in Track_Objects],
+                frame=self._frame_counter,
+                timestamp=frame_timestamp,
+            )
+            for track, track_id in zip(Track_Objects, assigned):
+                track['T_ID'] = track_id
+
             result["Point_cloud"] = {"Detect_Points": Detect_Points}
             result["Tracked_obj"] = {"Track_Objects": Track_Objects}
       
@@ -806,7 +827,6 @@ class CANFrameProcessor:
             self.send_to_visualizer(result)
 
             # Log parsed data asynchronously (NEW - Added after socket send)
-            frame_timestamp = frame_data[0]['timestamp'] if frame_data else None
             self.log_parsed_data_async(result, frame_timestamp)
 
             # Return the packed JSON object

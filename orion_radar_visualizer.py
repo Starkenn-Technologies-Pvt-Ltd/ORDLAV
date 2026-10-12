@@ -500,7 +500,9 @@ class RadarPlotWidget(QWidget):
             self._draw_velocity_arrow(painter, centre, v_lateral, v_range, self.c('track'))
 
             speed = (v_lateral ** 2 + v_range ** 2) ** 0.5
-            label = f"T{index + 1}  {range_m:.0f} m  {speed:.1f} m/s"
+            # Identity assigned by association, not reported by the radar
+            track_id = track.get('T_ID', index + 1)
+            label = f"ID {track_id}  {range_m:.0f} m  {speed:.1f} m/s"
             self._draw_label(painter, label, centre.x() + 13, centre.y() - 20, self.c('track'))
 
     # Seconds of travel the velocity arrow represents, and its pixel cap so a
