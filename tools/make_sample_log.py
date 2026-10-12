@@ -30,11 +30,12 @@ ID_HEADER = 0xC1
 ID_POINT_CLOUD = 0xD1
 ID_CLUSTERS = 0xD2
 ID_TRACKERS = 0xD3
-ID_MOVING_OBJ = 0x510
-ID_STATIC_OBJ = 0x590
-ID_HIL_1 = 0x100
-ID_HIL_2 = 0x101
+ID_MOVING_OBJ = (0x510, 0x511, 0x512)      # closest, 2nd, 3rd
+ID_STATIC_OBJ = (0x590, 0x591, 0x592)
+ID_HIL = (0x100, 0x101, 0x102, 0x103)
 ID_EGO_SPEED = 0x3F5
+ID_EGO_YAW = 0x3F7
+ID_TIME_MSG = 0x6F0
 ID_ALARM_THRESH = 0x6F1
 ID_ALARM_STATUS = 0x001
 ID_DYNAMIC_COUNT = 0x501
@@ -71,9 +72,46 @@ def encode_object(rng_m, lat_m, v_rng, v_lat):
     ])
 
 
-def encode_ego_speed(kmph):
-    raw = clamp(int(round(kmph / 0.01)), 0, 0x7FFF)
-    return bytes([raw & 0xFF, (raw >> 8) & 0x7F, 0, 0, 0, 0, 0, 0])
+def set_bits(buffer, start_bit, length, value):
+    """Write an unsigned little-endian (Intel) signal, as the DBC defines."""
+    value = int(value) & ((1 << length) - 1)
+    for index in range(length):
+        if (value >> index) & 1:
+            buffer[(start_bit + index) // 8] |= 1 << ((start_bit + index) % 8)
+    return buffer
+
+
+def encode_ego_speed(speed_mps):
+    """DBC Vehicle_Data_Speed: 15 bits at 0.01, unit m/s."""
+    buffer = bytearray(4)
+    set_bits(buffer, 0, 15, round(speed_mps / 0.01))
+    return bytes(buffer)
+
+
+def encode_yaw(yaw_rate):
+    """DBC: sign at bit 35, magnitude bits 36-49 at 0.01."""
+    buffer = bytearray(8)
+    set_bits(buffer, 35, 1, 1 if yaw_rate < 0 else 0)
+    set_bits(buffer, 36, 14, round(abs(yaw_rate) / 0.01))
+    return bytes(buffer)
+
+
+def encode_time_msg(ttc_s, pet_s, relevant_object):
+    """DBC Time_Msg: TTC, post-encroachment time, relevant object index."""
+    buffer = bytearray(8)
+    set_bits(buffer, 0, 16, round(max(0.0, ttc_s) / 0.01))
+    set_bits(buffer, 32, 16, round(max(0.0, pet_s) / 0.01))
+    set_bits(buffer, 56, 4, relevant_object)
+    return bytes(buffer)
+
+
+def encode_hil_target(rng_m, lat_m, v_rng, v_lat, type_code, trajectory, rcs):
+    """HIL target: object layout plus classification, trajectory and RCS."""
+    buffer = bytearray(encode_object(rng_m, lat_m, v_rng, v_lat))
+    set_bits(buffer, 47, 4, type_code)
+    set_bits(buffer, 51, 2, trajectory)
+    set_bits(buffer, 53, 6, rcs)
+    return bytes(buffer)
 
 
 # DBC: FCWS_Alarm_Distance_Thresh is 0.5 m per LSB
@@ -88,9 +126,13 @@ def encode_alarm_thresholds(static_levels_m, moving_levels_m):
     return bytes([s1, s2, s3, 0x00, m1, m2, m3, 0x00])
 
 
-def encode_count(count):
-    """Object count messages (0x501 / 0x581) carry the count in byte 0."""
-    return bytes([clamp(int(count), 0, 255), 0, 0, 0, 0, 0, 0, 0])
+def encode_count(count, cycle_time_ms=50, cycle_count=0):
+    """Object count messages: count, cycle time, and a free-running counter."""
+    buffer = bytearray(8)
+    set_bits(buffer, 0, 8, clamp(int(count), 0, 255))
+    set_bits(buffer, 8, 8, clamp(int(cycle_time_ms), 0, 255))
+    set_bits(buffer, 32, 32, cycle_count)
+    return bytes(buffer)
 
 
 def q(value):
@@ -152,6 +194,10 @@ def chunk_to_messages(header_rest, tlvs):
         can_id = next(cid for limit, cid in boundaries if offset < limit)
         messages.append((can_id, chunk))
     return messages
+
+
+def progress_of(i, total):
+    return i / max(1, total - 1)
 
 
 def scenario_frame(i, total):
@@ -240,16 +286,29 @@ def generate(path, frames, seed):
             i + 1, state["points"], state["clusters"], state["tracks"])
         radar_messages = chunk_to_messages(header_rest, tlvs)
 
+        ego_mps = state["ego_kmph"] / 3.6
+        ttc = rng / abs(v_rng) if v_rng < -0.1 else 0.0
+
         signal_messages = [
-            (ID_MOVING_OBJ, encode_object(rng, lat, v_rng, v_lat)),
-            (ID_STATIC_OBJ, encode_object(s_rng, s_lat, s_v_rng, s_v_lat)),
-            (ID_HIL_1, encode_object(t_rng, t_lat, t_v_rng, t_v_lat)),
-            (ID_HIL_2, encode_object(s_rng, s_lat, s_v_rng, s_v_lat)),
-            (ID_EGO_SPEED, encode_ego_speed(state["ego_kmph"])),
+            # Moving object slots, ranked closest first
+            (ID_MOVING_OBJ[0], encode_object(rng, lat, v_rng, v_lat)),
+            (ID_MOVING_OBJ[1], encode_object(rng + 18.0, lat - 3.4, -2.0, 0.1)),
+            (ID_MOVING_OBJ[2], encode_object(rng + 41.0, lat + 6.1, -1.0, 0.0)),
+            # Stationary object slots
+            (ID_STATIC_OBJ[0], encode_object(s_rng, s_lat, s_v_rng, s_v_lat)),
+            (ID_STATIC_OBJ[1], encode_object(s_rng + 23.0, -6.4, s_v_rng, 0.0)),
+            (ID_STATIC_OBJ[2], encode_object(s_rng + 52.0, 7.8, s_v_rng, 0.0)),
+            # HIL ground truth, with class / trajectory / RCS
+            (ID_HIL[0], encode_hil_target(t_rng, t_lat, t_v_rng, t_v_lat, 3, 1, 22)),
+            (ID_HIL[1], encode_hil_target(s_rng, s_lat, s_v_rng, s_v_lat, 4, 0, 30)),
+            (ID_HIL[2], encode_hil_target(t_rng + 18.0, t_lat - 3.4, -2.0, 0.1, 1, 1, 6)),
+            (ID_HIL[3], encode_hil_target(t_rng + 41.0, t_lat + 6.1, -1.0, 0.0, 2, 0, 11)),
+            (ID_EGO_SPEED, encode_ego_speed(ego_mps)),
+            (ID_EGO_YAW, encode_yaw(0.6 * math.sin(progress_of(i, frames) * math.pi))),
+            (ID_TIME_MSG, encode_time_msg(ttc, 0.0, 1)),
             (ID_ALARM_THRESH, encode_alarm_thresholds((30, 20, 10), (60, 40, 20))),
-            # Counts the radar reports; the second track appears part-way in
-            (ID_DYNAMIC_COUNT, encode_count(len(state["tracks"]))),
-            (ID_STATIC_COUNT, encode_count(1)),
+            (ID_DYNAMIC_COUNT, encode_count(len(state["tracks"]) + 1, 50, i + 1)),
+            (ID_STATIC_COUNT, encode_count(3, 50, i + 1)),
         ]
         # Alarm only fires once the target is inside the level-1 moving threshold
         if rng < 60.0:

@@ -212,8 +212,9 @@ class RadarPlotWidget(QWidget):
             self.object_counts = self.frame.get('Object_counts') or {}
 
             try:
+                # DBC Vehicle_Data_Speed is m/s, not km/h
                 self.ego_speed_mps = float(
-                    (self.frame.get('ego_speed') or {}).get('ego_speed')) / 3.6
+                    (self.frame.get('ego_speed') or {}).get('ego_speed'))
             except (TypeError, ValueError):
                 pass  # keep the last known ego speed
 
@@ -1078,11 +1079,12 @@ class RadarVisualizerMainWindow(QMainWindow):
 
     def _update_ego_speed(self, json_data):
         try:
-            speed = float((json_data.get('ego_speed') or {}).get('ego_speed'))
+            # The signal is m/s (DBC Vehicle_Data_Speed); shown as km/h
+            speed_mps = float((json_data.get('ego_speed') or {}).get('ego_speed'))
         except (TypeError, ValueError, AttributeError):
             return  # keep the last known speed rather than blanking it
-        if speed >= 0:
-            self.ego_speed_label.setText(f"{speed:.1f}")
+        if speed_mps >= 0:
+            self.ego_speed_label.setText(f"{speed_mps * 3.6:.1f}")
 
     def _update_alarm(self, json_data):
         status = json_data.get('Alarm_status') or {}

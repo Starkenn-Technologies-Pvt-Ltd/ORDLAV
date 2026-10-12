@@ -66,19 +66,37 @@ def pick_track(frame):
     return counts.index[0] if len(counts) else None
 
 
-def align(objects, radar_source, truth_source, track_id=None):
-    """One row per frame with radar and ground-truth columns side by side."""
+def align(objects, radar_source, truth_source, track_id=None, slot=1):
+    """One row per frame with radar and ground-truth columns side by side.
+
+    A source can carry several objects per frame - the CAN object messages
+    report three slots, ranked by proximity - so exactly one must be selected
+    or the merge becomes a cross product and the error statistics are
+    meaningless.
+    """
     truth = objects[objects.source == truth_source]
     radar = objects[objects.source == radar_source]
-    if radar_source == "track":
-        chosen = track_id if track_id is not None else pick_track(radar)
-        if chosen is None:
+
+    if track_id is not None:
+        radar = radar[radar.assoc_id == track_id]
+        chosen = f"assoc_id {track_id}"
+    elif radar_source == "track":
+        picked = pick_track(radar)
+        if picked is None:
             return pd.DataFrame(), None
-        radar = radar[radar.assoc_id == chosen]
+        radar = radar[radar.assoc_id == picked]
+        chosen = f"assoc_id {picked}"
+    elif "obj_index" in radar.columns and radar.obj_index.nunique() > 1:
+        radar = radar[radar.obj_index == slot]
+        chosen = f"slot {slot}"
     else:
         chosen = None
 
+    if truth.frame_num.duplicated().any():
+        truth = truth.drop_duplicates(subset="frame_num", keep="first")
+
     columns = ["frame_num", "timestamp"] + [c for c, _, _ in CHANNELS]
+    radar = radar.drop_duplicates(subset="frame_num", keep="first")
     merged = truth[columns].merge(
         radar[columns], on="frame_num", suffixes=("_gt", "_radar"))
     return merged, chosen
@@ -216,7 +234,8 @@ def process(path, args, tolerances):
         print(f"  SKIPPED {path}: not a long-format objects log")
         return
 
-    merged, chosen = align(objects, args.source, args.truth, args.track_id)
+    merged, chosen = align(objects, args.source, args.truth,
+                           args.track_id, args.slot)
     if merged.empty:
         print(f"  SKIPPED {path}: no overlap between "
               f"'{args.source}' and '{args.truth}'")
@@ -235,7 +254,7 @@ def process(path, args, tolerances):
     context = {
         "source log": os.path.basename(path),
         "scenario": f"{scenario}  ({SCENARIOS.get(scenario, 'not a known label')})",
-        "radar source": args.source + (f" (id {chosen})" if chosen is not None else ""),
+        "radar source": args.source + (f"  [{chosen}]" if chosen else ""),
         "ground truth": args.truth,
         "tolerances": args.tolerances or "none configured",
     }
@@ -267,8 +286,11 @@ def main():
     parser.add_argument("--truth", default="hil1",
                         help="Ground-truth source (default: hil1)")
     parser.add_argument("--track-id", type=float, default=None,
-                        help="With --source track, assess this identity "
-                             "(default: the longest-lived one)")
+                        help="Assess this assigned identity (assoc_id). "
+                             "Defaults to the longest-lived one for tracks.")
+    parser.add_argument("--slot", type=int, default=1,
+                        help="For the CAN object sources, which proximity "
+                             "slot to assess: 1 is the closest (default: 1)")
     parser.add_argument("--scenario", default=None,
                         help="Test case label, e.g. CCRs, CPNA")
     parser.add_argument("--tolerances", default=None,

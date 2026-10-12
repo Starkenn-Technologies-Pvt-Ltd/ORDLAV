@@ -202,6 +202,33 @@ straight back. To generate a synthetic one — a target closing from 80 m to
 ~/.venvs/ordlav/bin/python tools/make_sample_log.py -o sample_log.csv -n 200
 ```
 
+## What the radar sends
+
+Decoded per DBC V6:
+
+| ID | Message | Notes |
+|---|---|---|
+| `0x510/511/512` | moving objects 1-3 | slots ranked by proximity, closest first |
+| `0x590/591/592` | stationary objects 1-3 | same |
+| `0x501` / `0x581` | object counts | plus cycle time and a cycle counter |
+| `0x6F0` | TTC / PET / relevant object | |
+| `0x6F1` | alarm thresholds | 0.5 m per LSB |
+| `0x001` | alarm level | 2 bits |
+| `0x3F5` | ego speed | **m/s**, not km/h |
+| `0x3F7` | ego yaw rate | sign plus magnitude |
+| `0x100`-`0x103` | HIL targets 1-4 | with class, trajectory and RCS |
+
+Two things worth knowing:
+
+**The object slots are not identities.** `_1` is whatever is closest right now,
+so an object moves between slots as the ranking changes. Identity has to be
+established by association — see below.
+
+**Classification is ground truth, not radar output.** Target type
+(pedestrian / cycle / car / truck), trajectory and RCS come from the HIL rig on
+`0x100`-`0x103`. The radar reports no class, orientation, size or acceleration
+in any documented message.
+
 ## Object identity and continuity
 
 No documented message carries an object ID, so `object_tracker.py` assigns one

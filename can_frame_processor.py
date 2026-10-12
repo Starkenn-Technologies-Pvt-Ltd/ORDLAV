@@ -35,8 +35,17 @@ OR_MRR_POINT_CLOUD = 0xD1
 OR_MRR_CLUSTERS = 0xD2
 OR_MRR_TRACKERS = 0xD3
 OR_MRR_PADDING = 0xE1
+# DBC V6 exposes three moving and three stationary objects, ranked by
+# proximity: _1 is the closest. These are slots, not identities - an object
+# moves between slots as the ranking changes.
 OR_FCWS_MOVING_OBJ = 0x510
+OR_FCWS_MOVING_OBJ_2 = 0x511
+OR_FCWS_MOVING_OBJ_3 = 0x512
 OR_FCWS_STATIC_OBJ = 0x590
+OR_FCWS_STATIC_OBJ_2 = 0x591
+OR_FCWS_STATIC_OBJ_3 = 0x592
+OR_TIME_MSG = 0x6F0        # time to collision, PET, relevant object index
+VEH_YAW = 0x3F7            # ego yaw rate
 # Object counts reported by the radar (DBC: FCWS_Dynamic/Stationary_Object_Count).
 # These are how many objects the radar says it sees, which is what exposes an
 # object split - 0x510/0x590 only ever carry the single closest object.
@@ -49,8 +58,17 @@ OR_ECU_ALARM = 0x1
 HIL_100 =0x100
 HIL_101 =0x101
 HIL_102 =0x102
+HIL_103 =0x103
 
-can_ids_to_filter = [OR_MRR_DATA_HEADER, OR_MRR_POINT_CLOUD, OR_MRR_TRACKERS, OR_MRR_CLUSTERS, OR_FCWS_STATIC_OBJ, OR_FCWS_MOVING_OBJ, OR_ALARM_STATUS, OR_FCWS_THRESH, VEH_SPEED, OR_ECU_ALARM, HIL_100, HIL_101, OR_FCWS_DYNAMIC_COUNT, OR_FCWS_STATIC_COUNT]
+can_ids_to_filter = [
+    OR_MRR_DATA_HEADER, OR_MRR_POINT_CLOUD, OR_MRR_TRACKERS, OR_MRR_CLUSTERS,
+    OR_FCWS_MOVING_OBJ, OR_FCWS_MOVING_OBJ_2, OR_FCWS_MOVING_OBJ_3,
+    OR_FCWS_STATIC_OBJ, OR_FCWS_STATIC_OBJ_2, OR_FCWS_STATIC_OBJ_3,
+    OR_ALARM_STATUS, OR_FCWS_THRESH, OR_TIME_MSG, OR_ECU_ALARM,
+    VEH_SPEED, VEH_YAW,
+    HIL_100, HIL_101, HIL_102, HIL_103,
+    OR_FCWS_DYNAMIC_COUNT, OR_FCWS_STATIC_COUNT,
+]
 
 FRAME_START_DATA = "02 01 04 03 06 05 08 07"  # Frame delimiter data pattern
 
@@ -89,6 +107,13 @@ class CANFrameProcessor:
         # The radar sends no object ID, so identities are assigned here by
         # associating each frame's tracks with the previous frame's.
         self.tracker = ObjectTracker()
+        # The CAN object slots are ranked by proximity, so slot 1 becomes
+        # slot 2 the moment something closer appears. They are positions in a
+        # list, not identities, and need associating just like the TLV tracks.
+        self.object_trackers = {
+            'Dynamic_objects': ObjectTracker(),
+            'Static_objects': ObjectTracker(),
+        }
         self._frame_counter = 0
 
         # Frame processing
@@ -197,10 +222,11 @@ class CANFrameProcessor:
 
     # One row per frame.
     FRAMES_COLUMNS = [
-        'frame_num', 'timestamp', 'ego_speed', 'alarm_type',
+        'frame_num', 'timestamp', 'ego_speed_mps', 'yaw_rate', 'alarm_type',
+        'ttc', 'pet', 'relevant_object',
         'thresh_l1_sta', 'thresh_l2_sta', 'thresh_l3_sta',
         'thresh_l1_mov', 'thresh_l2_mov', 'thresh_l3_mov',
-        'n_dynamic_reported', 'n_static_reported',
+        'n_dynamic_reported', 'n_static_reported', 'radar_cycle',
         'n_points', 'n_clusters', 'n_tracks',
     ]
 
@@ -214,6 +240,8 @@ class CANFrameProcessor:
         'frame_num', 'timestamp', 'source', 'obj_index', 'assoc_id',
         'distX', 'distY', 'vrelX', 'vrelY',
         'extentX', 'extentY', 'doppler', 'peak',
+        # Ground-truth attributes; the radar itself reports none of these
+        'target_type', 'trajectory', 'rcs_dbsm',
     ]
 
     def _initialize_long_format_csv(self):
@@ -242,35 +270,55 @@ class CANFrameProcessor:
         counts = data.get('Object_counts', {}) or {}
         thresholds = data.get('Alarm_thresh', {}) or {}
 
+        timing = data.get('Time_msg', {}) or {}
+        vehicle = data.get('Vehicle', {}) or {}
+
         frame_row = [
             frame_num, timestamp,
             self._as_float(data.get('ego_speed', {}).get('ego_speed')),
+            vehicle.get('yaw_rate', ''),
             data.get('Alarm_status', {}).get('Alarm_type', ''),
+            timing.get('ttc', ''), timing.get('pet', ''),
+            timing.get('relevant_object', ''),
             thresholds.get('Level_1_Sta', ''), thresholds.get('Level_2_Sta', ''),
             thresholds.get('Level_3_Sta', ''), thresholds.get('Level_1_Mov', ''),
             thresholds.get('Level_2_Mov', ''), thresholds.get('Level_3_Mov', ''),
             counts.get('dynamic', ''), counts.get('static', ''),
+            counts.get('dynamic_cycle', ''),
             len(points), len(clusters), len(tracks),
         ]
 
         rows = []
 
         def add(source, index, distX, distY, vrelX='', vrelY='',
-                extentX='', extentY='', doppler='', peak='', assoc_id=''):
+                extentX='', extentY='', doppler='', peak='', assoc_id='',
+                target_type='', trajectory='', rcs=''):
             rows.append([frame_num, timestamp, source, index, assoc_id,
                          distX, distY, vrelX, vrelY,
-                         extentX, extentY, doppler, peak])
+                         extentX, extentY, doppler, peak,
+                         target_type, trajectory, rcs])
 
-        # CAN objects already use distX/distY naming
-        for source, key in (('dynamic', 'Dynamic_obj'), ('static', 'Static_obj'),
-                            ('hil1', 'HIL_Target1'), ('hil2', 'HIL_Target2')):
-            payload = data.get(key) or {}
-            if payload:
-                add(source, 0,
+        # CAN objects already use distX/distY naming. Each slot is logged
+        # separately; obj_index is the slot, ranked by proximity.
+        for source, key in (('dynamic', 'Dynamic_objects'),
+                            ('static', 'Static_objects')):
+            for slot, payload in sorted((data.get(key) or {}).items()):
+                add(source, slot,
                     self._as_float(payload.get('x_val')),
                     self._as_float(payload.get('y_val')),
                     self._as_float(payload.get('Vx_val')),
-                    self._as_float(payload.get('Vy_val')))
+                    self._as_float(payload.get('Vy_val')),
+                    assoc_id=payload.get('assoc_id', ''))
+
+        for target, payload in sorted((data.get('HIL_Targets') or {}).items()):
+            add(f'hil{target}', target,
+                self._as_float(payload.get('x_val')),
+                self._as_float(payload.get('y_val')),
+                self._as_float(payload.get('Vx_val')),
+                self._as_float(payload.get('Vy_val')),
+                target_type=payload.get('type', ''),
+                trajectory=payload.get('trajectory', ''),
+                rcs=payload.get('rcs_dbsm', ''))
 
         # TLV sources: X is lateral and Y is range, so the axes swap here
         for index, track in enumerate(tracks):
@@ -655,7 +703,13 @@ class CANFrameProcessor:
             "Alarm_status": {},
             "Point_cloud": {},
             "Tracked_obj": {},
-            "Object_counts": {}
+            "Object_counts": {},
+            # All three slots of each kind, and all four HIL targets
+            "Dynamic_objects": {},
+            "Static_objects": {},
+            "HIL_Targets": {},
+            "Time_msg": {},
+            "Vehicle": {}
         }
 
         try:
@@ -707,53 +761,40 @@ class CANFrameProcessor:
                 id_counts[can_id] = id_counts.get(can_id, 0) + 1
 
                 # Process based on CAN ID
-                if can_id == '590':
-                    parsed_data = self.parse_590(data)
+                # Three moving and three stationary object slots
+                if can_id in ('510', '511', '512', '590', '591', '592'):
+                    slot = int(can_id[2], 16) + 1
+                    kind = 'Dynamic' if can_id[1] == '1' else 'Static'
+                    parsed_data = self.parse_object_signal(data, can_id)
                     if parsed_data:
                         x_val, y_val, Vx_val, Vy_val = parsed_data
-                        result["Static_obj"] = {
-                            "x_val": x_val,
-                            "y_val": y_val,
-                            "Vx_val": Vx_val,
-                            "Vy_val": Vy_val
-                        }
+                        payload = {"slot": slot, "x_val": x_val, "y_val": y_val,
+                                   "Vx_val": Vx_val, "Vy_val": Vy_val}
+                        result[f"{kind}_objects"][slot] = payload
+                        if slot == 1:
+                            # Closest object keeps its original key so existing
+                            # consumers and the wide CSV are unaffected.
+                            result[f"{kind}_obj"] = {
+                                "x_val": x_val, "y_val": y_val,
+                                "Vx_val": Vx_val, "Vy_val": Vy_val}
 
-                elif can_id == '510':
-                    parsed_data = self.parse_510(data)
+                elif can_id in ('100', '101', '102', '103'):
+                    target = int(can_id, 16) - 0xFF   # 0x100 -> 1
+                    parsed_data = self.parse_hil_target(data, can_id)
                     if parsed_data:
-                        x_val, y_val, Vx_val, Vy_val = parsed_data
-                        result["Dynamic_obj"] = {
-                            "x_val": x_val,
-                            "y_val": y_val,
-                            "Vx_val": Vx_val,
-                            "Vy_val": Vy_val
-                        }
-                elif can_id == '100':
-                    parsed_data = self.parse_100(data)
-                    if parsed_data:
-                        x_val, y_val, Vx_val, Vy_val = parsed_data
-                        result["HIL_Target1"] = {
-                            "x_val": x_val,
-                            "y_val": y_val,
-                            "Vx_val": Vx_val,
-                            "Vy_val": Vy_val
-                        }
-                elif can_id == '101':
-                    parsed_data = self.parse_101(data)
-                    if parsed_data:
-                        x_val, y_val, Vx_val, Vy_val = parsed_data
-                        result["HIL_Target2"] = {
-                            "x_val": x_val,
-                            "y_val": y_val,
-                            "Vx_val": Vx_val,
-                            "Vy_val": Vy_val
-                        }
+                        result["HIL_Targets"][target] = parsed_data
+                        if target in (1, 2):
+                            result[f"HIL_Target{target}"] = parsed_data
 
                 elif can_id == '3F5':
                     parsed_data = self.parse_3F5(data)
                     if parsed_data:
                         result["ego_speed"] = {"ego_speed": parsed_data}
-                        #print(parsed_data)
+
+                elif can_id == '3F7':
+                    parsed_data = self.parse_yaw(data)
+                    if parsed_data:
+                        result["Vehicle"] = parsed_data
 
                 elif can_id == '6F1':
                     parsed_data = self.parse_0x6F1_Alarm_distance_Msg(data)
@@ -768,15 +809,22 @@ class CANFrameProcessor:
                             "Level_3_Mov": Level_3_Mov
                         }
 
+                elif can_id == '6F0':
+                    parsed_data = self.parse_time_msg(data)
+                    if parsed_data:
+                        result["Time_msg"] = parsed_data
+
                 elif can_id == '501':
                     parsed_data = self.parse_object_count(data, '501')
-                    if parsed_data is not None:
-                        result["Object_counts"]["dynamic"] = parsed_data
+                    if parsed_data:
+                        result["Object_counts"]["dynamic"] = parsed_data["count"]
+                        result["Object_counts"]["dynamic_cycle"] = parsed_data["cycle_count"]
 
                 elif can_id == '581':
                     parsed_data = self.parse_object_count(data, '581')
-                    if parsed_data is not None:
-                        result["Object_counts"]["static"] = parsed_data
+                    if parsed_data:
+                        result["Object_counts"]["static"] = parsed_data["count"]
+                        result["Object_counts"]["static_cycle"] = parsed_data["cycle_count"]
 
                 elif can_id == '1':
                     parsed_data = self.parse_0X001_Alarm_Info(data)
@@ -805,6 +853,18 @@ class CANFrameProcessor:
             # T_X lateral, which is the order the tracker expects.
             self._frame_counter += 1
             frame_timestamp = frame_data[0]['timestamp'] if frame_data else None
+
+            # Same for the CAN object slots, in slot order
+            for key, tracker in self.object_trackers.items():
+                slots = sorted((result.get(key) or {}).items())
+                if not slots:
+                    continue
+                ids = tracker.update(
+                    [(float(p['x_val']), float(p['y_val']),
+                      float(p['Vx_val']), float(p['Vy_val'])) for _, p in slots],
+                    frame=self._frame_counter, timestamp=frame_timestamp)
+                for (_, payload), assigned in zip(slots, ids):
+                    payload['assoc_id'] = assigned
             assigned = self.tracker.update(
                 [(t['T_Y'], t['T_X'], t.get('T_Vy', 0.0), t.get('T_Vx', 0.0))
                  for t in Track_Objects],
@@ -839,43 +899,58 @@ class CANFrameProcessor:
             return {}
 
     # ------------------------------------------------------------------
-    # CAN signal decoding
+    # CAN signal decoding  (Starkenn Radar DBC V6)
     # ------------------------------------------------------------------
-    # 0x590 / 0x510 / 0x100 / 0x101 all carry the same 6-byte object layout:
-    #   x  (13 bit)  0.032 m/LSB, offset -60.8     longitudinal range
-    #   y  (12 bit)  0.064 m/LSB, offset -131.072  lateral offset
-    #   vx (11 bit)  0.1 m/s/LSB, offset -102.4
-    #   vy (11 bit)  0.1 m/s/LSB, offset -102.4
-    OBJECT_MSG_BYTES = 6
+    # Signals are extracted by bit offset and length straight from the DBC
+    # rather than hand-rolled per message. The generic extractor was checked
+    # against the previously verified object layout over random payloads.
+
+    @staticmethod
+    def _bits(data, start_bit, length):
+        """Unsigned little-endian (Intel) signal extraction, as the DBC uses."""
+        value = 0
+        for index in range(length):
+            bit = start_bit + index
+            byte_index = bit // 8
+            if byte_index < len(data) and (data[byte_index] >> (bit % 8)) & 1:
+                value |= 1 << index
+        return value
+
+    @staticmethod
+    def _to_bytes(hex_string):
+        return [int(token, 16) for token in hex_string.split()]
+
+    # Shared object layout: 0x510/0x511/0x512, 0x590/0x591/0x592 and the HIL
+    # targets all use it. Bits 47-63 are "Object_reserve_*" in the DBC - named
+    # reserve, carrying nothing today.
+    OBJECT_SIGNALS = {
+        'x': (0, 13, 0.032, -60.8),      # longitudinal distance, m
+        'y': (13, 12, 0.064, -131.072),  # lateral distance, m
+        'vx': (25, 11, 0.1, -102.4),     # longitudinal speed, m/s
+        'vy': (36, 11, 0.1, -102.4),     # lateral speed, m/s
+    }
 
     def parse_object_signal(self, hex_string, label=""):
         """Decode the shared object layout. Returns (x, y, Vx, Vy) or None."""
         try:
-            b = [int(token, 16) for token in hex_string.split()]
-            if len(b) < self.OBJECT_MSG_BYTES:
-                raise ValueError(f"need {self.OBJECT_MSG_BYTES} bytes, got {len(b)}")
-
-            x_raw = b[0] | ((b[1] & 0b00011111) << 8)
-            y_raw = ((b[1] & 0b11100000) >> 5) | (b[2] << 3) | ((b[3] & 0b00000001) << 11)
-            vx_raw = ((b[3] & 0b11111110) >> 1) | ((b[4] & 0b00001111) << 7)
-            vy_raw = ((b[4] & 0b11110000) >> 4) | ((b[5] & 0b01111111) << 4)
-
-            return (
-                format(0.032 * x_raw - 60.8, '.4f'),
-                format(0.064 * y_raw - 131.072, '.4f'),
-                format(0.1 * vx_raw - 102.4, '.4f'),
-                format(0.1 * vy_raw - 102.4, '.4f'),
-            )
+            data = self._to_bytes(hex_string)
+            if len(data) < 6:
+                raise ValueError(f"need 6 bytes, got {len(data)}")
+            out = []
+            for name in ('x', 'y', 'vx', 'vy'):
+                start, length, scale, offset = self.OBJECT_SIGNALS[name]
+                out.append(format(scale * self._bits(data, start, length) + offset, '.4f'))
+            return tuple(out)
         except Exception as e:
             print(f"Error parsing {label}:{hex_string}: {e}")
             return None
 
     def parse_590(self, hex_string):
-        """Static object of interest."""
+        """Closest stationary object."""
         return self.parse_object_signal(hex_string, "590")
 
     def parse_510(self, hex_string):
-        """Moving object of interest."""
+        """Closest moving object."""
         return self.parse_object_signal(hex_string, "510")
 
     def parse_100(self, hex_string):
@@ -886,19 +961,64 @@ class CANFrameProcessor:
         """HIL ground-truth target 2."""
         return self.parse_object_signal(hex_string, "101")
 
-    def parse_3F5(self, hex_string):
-        """Ego speed, 0.01 km/h per LSB across 15 bits."""
+    # DBC: "1-Pedestrian, 2-Cycle, 3-Car, 4-Truck"
+    TARGET_TYPES = {0: "unknown", 1: "pedestrian", 2: "cycle", 3: "car", 4: "truck"}
+    # DBC: "0 - Receding Target, 1- Oncoming Target"
+    TARGET_TRAJECTORIES = {0: "receding", 1: "oncoming"}
+
+    def parse_hil_target(self, hex_string, label=""):
+        """HIL target: object layout plus classification, trajectory and RCS.
+
+        These attributes come from the HIL rig, so they are ground truth about
+        the target, not radar output. The radar itself reports no class.
+        """
+        base = self.parse_object_signal(hex_string, label)
+        if base is None:
+            return None
         try:
-            b = [int(token, 16) for token in hex_string.split()]
-            if len(b) < 2:
+            data = self._to_bytes(hex_string)
+            type_code = self._bits(data, 47, 4)
+            trajectory_code = self._bits(data, 51, 2)
+            payload = {
+                "x_val": base[0], "y_val": base[1],
+                "Vx_val": base[2], "Vy_val": base[3],
+                "type_code": type_code,
+                "type": self.TARGET_TYPES.get(type_code, f"code {type_code}"),
+                "trajectory": self.TARGET_TRAJECTORIES.get(
+                    trajectory_code, f"code {trajectory_code}"),
+                "rcs_dbsm": self._bits(data, 53, 6),
+            }
+            return payload
+        except Exception as e:
+            print(f"Error parsing {label} attributes {hex_string}: {e}")
+            return None
+
+    def parse_3F5(self, hex_string):
+        """Ego speed. DBC Vehicle_Data_Speed: 15 bits, 0.01, unit m/s."""
+        try:
+            data = self._to_bytes(hex_string)
+            if len(data) < 2:
                 raise ValueError("need 2 bytes")
-            ego_speed = b[0] | ((b[1] & 0b01111111) << 8)
-            return format(0.01 * ego_speed, '.1f')
+            return format(0.01 * self._bits(data, 0, 15), '.2f')
         except Exception as e:
             print(f"Error parsing 3F5 {hex_string}: {e}")
             return None
 
-    # DBC: FCWS_Alarm_Distance_Thresh, 0.5 m per LSB, range 0..127.5 m
+    def parse_yaw(self, hex_string):
+        """Ego yaw rate. DBC: sign bit 35, magnitude bits 36-49 at 0.01."""
+        try:
+            data = self._to_bytes(hex_string)
+            if len(data) < 7:
+                raise ValueError("need 7 bytes")
+            magnitude = 0.01 * self._bits(data, 36, 14)
+            sign = self._bits(data, 35, 1)
+            return {"yaw_rate": round(-magnitude if sign else magnitude, 3),
+                    "yaw_sign": sign}
+        except Exception as e:
+            print(f"Error parsing 3F7 {hex_string}: {e}")
+            return None
+
+    # DBC: Alarm_distance_Msg, 0.5 m per LSB, range 0..127.5 m
     ALARM_THRESH_SCALE = 0.5
 
     def parse_0x6F1_Alarm_distance_Msg(self, hex_string):
@@ -907,33 +1027,54 @@ class CANFrameProcessor:
         Byte 3 is unused; the DBC places the moving levels at bytes 4-6.
         """
         try:
-            b = [int(token, 16) for token in hex_string.split()]
-            if len(b) < 7:
+            data = self._to_bytes(hex_string)
+            if len(data) < 7:
                 raise ValueError("need 7 bytes")
-            return [round(b[i] * self.ALARM_THRESH_SCALE, 1)
+            return [round(data[i] * self.ALARM_THRESH_SCALE, 1)
                     for i in (0, 1, 2, 4, 5, 6)]
         except Exception as e:
             print(f"Error parsing 6F1 {hex_string}: {e}")
             return None
 
-    def parse_0X001_Alarm_Info(self, hex_string):
-        """Active alarm type. DBC: FCWS_Alarm is 2 bits, values 0-3."""
+    def parse_time_msg(self, hex_string):
+        """0x6F0 Time_Msg: time to collision, post-encroachment time, and the
+        index of the object those refer to."""
         try:
-            b = [int(token, 16) for token in hex_string.split()]
-            if not b:
+            data = self._to_bytes(hex_string)
+            if len(data) < 8:
+                raise ValueError("need 8 bytes")
+            return {
+                "ttc": round(0.01 * self._bits(data, 0, 16), 2),
+                "pet": round(0.01 * self._bits(data, 32, 16), 2),
+                "relevant_object": self._bits(data, 56, 4),
+            }
+        except Exception as e:
+            print(f"Error parsing 6F0 {hex_string}: {e}")
+            return None
+
+    def parse_0X001_Alarm_Info(self, hex_string):
+        """Active alarm type. 2 bits, values 0-3."""
+        try:
+            data = self._to_bytes(hex_string)
+            if not data:
                 raise ValueError("empty payload")
-            return b[0] & 0b11
+            return data[0] & 0b11
         except Exception as e:
             print(f"Error parsing 001 {hex_string}: {e}")
             return None
 
     def parse_object_count(self, hex_string, label=""):
-        """Object count messages (0x501 / 0x581): a plain byte-0 count."""
+        """Object count messages: count, cycle time and a free-running cycle
+        counter. The counter is what reveals a dropped radar cycle."""
         try:
-            b = [int(token, 16) for token in hex_string.split()]
-            if not b:
+            data = self._to_bytes(hex_string)
+            if not data:
                 raise ValueError("empty payload")
-            return b[0]
+            return {
+                "count": self._bits(data, 0, 8),
+                "cycle_time": self._bits(data, 8, 8) if len(data) >= 2 else None,
+                "cycle_count": self._bits(data, 32, 32) if len(data) >= 8 else None,
+            }
         except Exception as e:
             print(f"Error parsing {label} {hex_string}: {e}")
             return None
