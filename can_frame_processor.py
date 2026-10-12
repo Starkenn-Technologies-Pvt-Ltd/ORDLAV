@@ -222,6 +222,7 @@ class CANFrameProcessor:
         self._objects_csv_handle = None
         self._objects_csv_writer = None
         self._csv_lock = threading.Lock()
+        self._raw_rows_since_flush = 0
 
         # Performance statistics
         self.frames_collected = 0
@@ -551,6 +552,15 @@ class CANFrameProcessor:
                 if object_rows:
                     self._objects_csv_writer.writerows(object_rows)
 
+                # Flush every frame. Holding the handles open is what makes
+                # logging cheap, but it also buffers, and a run that is killed
+                # rather than stopped would lose whatever had not reached disk
+                # - which looks exactly like "the tool produced empty files".
+                # At radar frame rates this is a handful of flushes a second.
+                self._parsed_csv_handle.flush()
+                self._frames_csv_handle.flush()
+                self._objects_csv_handle.flush()
+
                 with self.stats_lock:
                     self.parsed_logs_written += 1
 
@@ -682,6 +692,10 @@ class CANFrameProcessor:
         finally:
             print("🔚 CAN message collection stopped")
 
+    # The raw log runs at hundreds of messages a second, so it is flushed in
+    # batches rather than per row.
+    RAW_FLUSH_EVERY = 200
+
     def log_to_csv(self, timestamp: float, arbitration_id: int, dlc: int, data: bytes):
         """Log CAN message to CSV file (preserves original logging functionality)"""
         try:
@@ -691,6 +705,10 @@ class CANFrameProcessor:
             arbitration_id_str = hex(arbitration_id).replace('0x','').upper()
             self._raw_csv_writer.writerow(
                 [timestamp, arbitration_id_str, dlc, self.format_can_data(data)])
+            self._raw_rows_since_flush += 1
+            if self._raw_rows_since_flush >= self.RAW_FLUSH_EVERY:
+                self._raw_csv_handle.flush()
+                self._raw_rows_since_flush = 0
         except Exception as e:
             print(f"❌ CSV logging error: {e}")
 
@@ -1414,6 +1432,22 @@ class CANFrameProcessor:
             self.bus.shutdown()
 
         print("🔌 CAN bus disconnected")
+
+        # A run that logs messages but writes no frames is a failure that
+        # otherwise shows up only as empty CSVs opened hours later.
+        with self.stats_lock:
+            received, collected, written = (self.messages_received,
+                                            self.frames_collected,
+                                            self.parsed_logs_written)
+        if received and not collected:
+            print("⚠️  No frames were assembled from "
+                  f"{received:,} messages. The frame delimiter "
+                  f"(ID 0x{OR_MRR_DATA_HEADER:X}, data '{FRAME_START_DATA}') "
+                  "was never seen twice - check that the radar is streaming.")
+        elif collected and not written:
+            print(f"⚠️  {collected:,} frames were collected but none were "
+                  "written to the parsed logs - every frame failed to decode.")
+
         print("✅ CAN frame processor stopped gracefully")
 
     def get_statistics(self) -> Dict[str, Any]:
