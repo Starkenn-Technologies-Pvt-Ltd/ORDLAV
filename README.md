@@ -157,6 +157,41 @@ ORDLAV.exe --theme light
 `--mode processor` runs headless capture only and `--mode visualizer` attaches
 to a processor running elsewhere; the default runs both.
 
+## Logs written
+
+Each run writes three CSVs alongside the raw CAN log:
+
+| File | Shape |
+|---|---|
+| `parsed_*.csv` | one row per frame, single object per category (legacy; unchanged) |
+| `frames_*.csv` | one row per frame: ego speed, alarm, thresholds, object counts |
+| `objects_*.csv` | **one row per object per frame** |
+
+`objects_*.csv` is the one to analyse. Every source — the CAN objects, the HIL
+targets, and the radar's own tracks, clusters and points — is normalised to a
+single convention: **`distX` longitudinal (ahead positive), `distY` lateral
+(right positive)**. The mmWave TLV stream names its axes the other way round,
+so it is converted at the parser rather than leaving each consumer to remember
+which source means what. The `source` column says where each row came from.
+
+The legacy wide CSV keeps its exact shape, so the analysis script and anything
+else reading it are unaffected.
+
+## Reverse-engineering the undecoded messages
+
+The DBC documents `0x334`–`0x338`, `0x500` and `0x6F0` as placeholders with
+unknown layout, and no documented message carries an object ID, orientation,
+classification or size. `tools/probe_unknown_ids.py` characterises those
+messages across a run — which bits move, which bytes behave like counters,
+slot indices or flags, and which 8/16-bit fields track a reference signal:
+
+```bash
+python tools/probe_unknown_ids.py bench_log.csv
+```
+
+Correlation is evidence, not proof. Confirm a candidate against a second log
+with different target geometry before decoding it for real.
+
 ## Replay logs
 
 Any raw log the processor writes (`HH_MM_mm_dd_YYYY.csv`) can be replayed

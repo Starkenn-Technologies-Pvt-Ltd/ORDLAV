@@ -37,6 +37,8 @@ ID_HIL_2 = 0x101
 ID_EGO_SPEED = 0x3F5
 ID_ALARM_THRESH = 0x6F1
 ID_ALARM_STATUS = 0x001
+ID_DYNAMIC_COUNT = 0x501
+ID_STATIC_COUNT = 0x581
 
 FRAME_DELIMITER = bytes([0x02, 0x01, 0x04, 0x03, 0x06, 0x05, 0x08, 0x07])
 Q_FORMAT = 7  # values are scaled by 2**7 = 128
@@ -74,10 +76,21 @@ def encode_ego_speed(kmph):
     return bytes([raw & 0xFF, (raw >> 8) & 0x7F, 0, 0, 0, 0, 0, 0])
 
 
-def encode_alarm_thresholds(static_levels, moving_levels):
-    s1, s2, s3 = static_levels
-    m1, m2, m3 = moving_levels
+# DBC: FCWS_Alarm_Distance_Thresh is 0.5 m per LSB
+ALARM_THRESH_SCALE = 0.5
+
+
+def encode_alarm_thresholds(static_levels_m, moving_levels_m):
+    """Levels are given in metres and packed at 0.5 m/LSB (byte 3 unused)."""
+    raw = [clamp(int(round(v / ALARM_THRESH_SCALE)), 0, 255)
+           for v in list(static_levels_m) + list(moving_levels_m)]
+    s1, s2, s3, m1, m2, m3 = raw
     return bytes([s1, s2, s3, 0x00, m1, m2, m3, 0x00])
+
+
+def encode_count(count):
+    """Object count messages (0x501 / 0x581) carry the count in byte 0."""
+    return bytes([clamp(int(count), 0, 255), 0, 0, 0, 0, 0, 0, 0])
 
 
 def q(value):
@@ -187,10 +200,14 @@ def scenario_frame(i, total):
     if progress > 0.3:  # a second track appears part-way through
         tracks.append((rep_lat - 3.4, rep_rng + 18.0, 0.1, -2.0))
 
+    # A world-stationary object is measured closing at the ego speed; it does
+    # not report zero relative velocity.
+    static_v_rng = -ego_kmph / 3.6
+
     return {
         "report": (rep_rng, rep_lat, rep_v_rng, rep_v_lat),
         "truth": (true_rng, true_lat, true_v_rng, true_v_lat),
-        "static": (static_rng, static_lat, 0.0, 0.0),
+        "static": (static_rng, static_lat, static_v_rng, 0.0),
         "ego_kmph": ego_kmph,
         "points": points,
         "clusters": clusters,
@@ -230,6 +247,9 @@ def generate(path, frames, seed):
             (ID_HIL_2, encode_object(s_rng, s_lat, s_v_rng, s_v_lat)),
             (ID_EGO_SPEED, encode_ego_speed(state["ego_kmph"])),
             (ID_ALARM_THRESH, encode_alarm_thresholds((30, 20, 10), (60, 40, 20))),
+            # Counts the radar reports; the second track appears part-way in
+            (ID_DYNAMIC_COUNT, encode_count(len(state["tracks"]))),
+            (ID_STATIC_COUNT, encode_count(1)),
         ]
         # Alarm only fires once the target is inside the level-1 moving threshold
         if rng < 60.0:

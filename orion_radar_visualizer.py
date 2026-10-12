@@ -14,6 +14,7 @@ velocity vectors, cluster extents, threshold bands.
 import argparse
 import datetime
 import json
+import math
 import socket
 import sys
 import time
@@ -158,11 +159,12 @@ class RadarPlotWidget(QWidget):
         self.setAutoFillBackground(True)
         self.theme = theme
 
-        # Scene extents in metres
-        self.half_width = 24.0     # lateral, each side of boresight
-        self.max_range = 120.0     # longitudinal
-        self.lateral_step = 6.0
-        self.range_step = 10.0
+        # Scene extent in metres. Only the range is set: the lateral extent
+        # follows from the widget's aspect ratio so that both axes share one
+        # metres-per-pixel scale. Without that, a rotated footprint shears and
+        # headings read as the wrong angle.
+        self.max_range = 120.0
+        self.grid_step = 10.0
 
         self.frame = {}
         self.detected_points = []
@@ -172,6 +174,8 @@ class RadarPlotWidget(QWidget):
         self.dynamic_obj = None
         self.alarm_thresholds = None
         self.alarm_type = None
+        self.ego_speed_mps = None
+        self.object_counts = {}
 
         self._grid_cache = None
         self._grid_key = None
@@ -205,6 +209,13 @@ class RadarPlotWidget(QWidget):
                 self.alarm_thresholds = thresholds
             status = self.frame.get('Alarm_status') or {}
             self.alarm_type = status.get('Alarm_type')
+            self.object_counts = self.frame.get('Object_counts') or {}
+
+            try:
+                self.ego_speed_mps = float(
+                    (self.frame.get('ego_speed') or {}).get('ego_speed')) / 3.6
+            except (TypeError, ValueError):
+                pass  # keep the last known ego speed
 
             self.update()
         except Exception as e:
@@ -242,20 +253,27 @@ class RadarPlotWidget(QWidget):
             max(1, self.height() - self.MARGIN_TOP - self.MARGIN_BOTTOM),
         )
 
+    def scale(self):
+        """Pixels per metre, identical on both axes."""
+        return self.plot_rect().height() / self.max_range
+
+    @property
+    def half_width(self):
+        """Lateral extent visible each side of boresight, in metres."""
+        return (self.plot_rect().width() / 2.0) / self.scale()
+
     def to_pixel_x(self, lateral_m):
         rect = self.plot_rect()
-        ratio = (lateral_m + self.half_width) / (2.0 * self.half_width)
-        return rect.left() + ratio * rect.width()
+        return rect.center().x() + lateral_m * self.scale()
 
     def to_pixel_y(self, range_m):
-        rect = self.plot_rect()
-        return rect.bottom() - (range_m / self.max_range) * rect.height()
+        return self.plot_rect().bottom() - range_m * self.scale()
 
     def metres_to_pixels_x(self, metres):
-        return (metres / (2.0 * self.half_width)) * self.plot_rect().width()
+        return metres * self.scale()
 
     def metres_to_pixels_y(self, metres):
-        return (metres / self.max_range) * self.plot_rect().height()
+        return metres * self.scale()
 
     # ── Background ─────────────────────────────────────────────────────────
 
@@ -272,9 +290,16 @@ class RadarPlotWidget(QWidget):
         label_font = QFont("Helvetica Neue", 9)
         painter.setFont(label_font)
 
-        # Lateral grid, spanning the full plot height
-        lateral = -self.half_width
-        while lateral <= self.half_width + 1e-6:
+        # Lateral grid, stepping outward from boresight to the visible edge
+        step = self.grid_step
+        limit = self.half_width
+        ticks = [0.0]
+        value = step
+        while value <= limit + 1e-6:
+            ticks.extend((-value, value))
+            value += step
+
+        for lateral in sorted(ticks):
             x = self.to_pixel_x(lateral)
             is_major = abs(lateral) < 1e-6
             painter.setPen(QPen(self.c('axis_line') if is_major else self.c('grid_minor'),
@@ -283,20 +308,19 @@ class RadarPlotWidget(QWidget):
             painter.setPen(QPen(self.c('text_mid') if is_major else self.c('text_dim')))
             painter.drawText(QRectF(x - 24, rect.bottom() + 6, 48, 16),
                              Qt.AlignCenter, f"{lateral:g}")
-            lateral += self.lateral_step
 
         # Range grid, with the top of the scene always labelled
         range_m = 0.0
-        ticks = []
+        range_ticks = []
         while range_m <= self.max_range + 1e-6:
-            ticks.append(range_m)
-            range_m += self.range_step
-        if ticks and abs(ticks[-1] - self.max_range) > self.range_step * 0.3:
-            ticks.append(self.max_range)
+            range_ticks.append(range_m)
+            range_m += self.grid_step
+        if range_ticks and abs(range_ticks[-1] - self.max_range) > self.grid_step * 0.3:
+            range_ticks.append(self.max_range)
 
-        for range_m in ticks:
+        for range_m in range_ticks:
             y = self.to_pixel_y(range_m)
-            is_major = abs(range_m % (self.range_step * 5)) < 1e-6
+            is_major = abs(range_m % (self.grid_step * 5)) < 1e-6
             painter.setPen(QPen(self.c('grid_major') if is_major else self.c('grid_minor'), 1))
             painter.drawLine(int(rect.left()), int(y), int(rect.right()), int(y))
             if range_m > 0:
@@ -321,8 +345,8 @@ class RadarPlotWidget(QWidget):
     # ── Painting ───────────────────────────────────────────────────────────
 
     def paintEvent(self, event):
-        key = (self.width(), self.height(), self.half_width,
-               self.max_range, self.theme)
+        key = (self.width(), self.height(), self.max_range,
+               self.grid_step, self.theme)
         if self._grid_cache is None or self._grid_key != key:
             self._grid_cache = self._build_grid()
             self._grid_key = key
@@ -465,9 +489,10 @@ class RadarPlotWidget(QWidget):
             painter.setBrush(QBrush(halo))
             painter.drawEllipse(centre, 15, 15)
 
-            painter.setBrush(Qt.NoBrush)
-            painter.setPen(QPen(self.c('track'), 1.8))
-            painter.drawRoundedRect(QRectF(centre.x() - 8, centre.y() - 8, 16, 16), 3, 3)
+            heading, _ = self.object_heading(v_range, v_lateral)
+            length, width = self.object_footprint(lateral, range_m)
+            self._draw_oriented_box(painter, centre, length, width, heading,
+                                    self.c('track'), fill_alpha=30, line_width=1.5)
             painter.setBrush(QBrush(self.c('track')))
             painter.setPen(Qt.NoPen)
             painter.drawEllipse(centre, 2.4, 2.4)
@@ -513,6 +538,77 @@ class RadarPlotWidget(QWidget):
         painter.setPen(Qt.NoPen)
         painter.drawPolygon(QPolygonF([tip, left, right]))
 
+    # Default footprint when the radar reports no size for an object.
+    DEFAULT_LENGTH_M = 4.5
+    DEFAULT_WIDTH_M = 1.8
+    STATIONARY_SPEED_MPS = 0.6
+
+    def object_heading(self, v_long, v_lat):
+        """Heading in radians, 0 = directly away from ego, measured toward +lateral.
+
+        The radar reports velocity relative to the ego vehicle, so a car ahead
+        travelling the same way shows a small negative longitudinal velocity.
+        Adding ego speed back recovers the target's motion over the ground,
+        which is a far better stand-in for orientation. Returns the heading and
+        whether it came from absolute or relative motion - the caller labels it,
+        because neither is a measured orientation.
+        """
+        if self.ego_speed_mps is not None:
+            absolute_long = v_long + self.ego_speed_mps
+            basis = "abs"
+        else:
+            absolute_long, basis = v_long, "rel"
+
+        # Below the stationary threshold there is no direction of travel to
+        # infer from, and a parked object still has an orientation we cannot
+        # see. Report nothing rather than a heading built from noise.
+        if math.hypot(absolute_long, v_lat) < self.STATIONARY_SPEED_MPS:
+            return None, basis
+        return math.atan2(v_lat, absolute_long), basis
+
+    def dynamic_property(self, v_long, v_lat):
+        """moving / stationary, derived from motion over the ground."""
+        if self.ego_speed_mps is None:
+            return "unknown"
+        speed = math.hypot(v_long + self.ego_speed_mps, v_lat)
+        return "stationary" if speed < self.STATIONARY_SPEED_MPS else "moving"
+
+    def _draw_oriented_box(self, painter, centre, length_m, width_m, heading,
+                           colour, fill_alpha=42, line_width=1.8):
+        """Footprint rotated to the object's heading.
+
+        Scene axes are anisotropic - lateral and range use different metres per
+        pixel - so the corners are rotated in metres and only then converted to
+        pixels. Rotating the pixel rectangle instead would shear the box.
+        """
+        half_l, half_w = length_m / 2.0, width_m / 2.0
+        corners_m = [(+half_l, -half_w), (+half_l, +half_w),
+                     (-half_l, +half_w), (-half_l, -half_w)]
+
+        angle = 0.0 if heading is None else heading
+        cos_a, sin_a = math.cos(angle), math.sin(angle)
+
+        polygon = QPolygonF()
+        for along, across in corners_m:
+            d_long = along * cos_a - across * sin_a
+            d_lat = along * sin_a + across * cos_a
+            polygon.append(QPointF(centre.x() + self.metres_to_pixels_x(d_lat),
+                                   centre.y() - self.metres_to_pixels_y(d_long)))
+
+        fill = QColor(colour)
+        fill.setAlpha(fill_alpha)
+        painter.setBrush(QBrush(fill))
+        painter.setPen(QPen(colour, line_width))
+        painter.drawPolygon(polygon)
+
+        # Short spur from the centre to the front face, marking which way it faces
+        if heading is not None:
+            nose_long, nose_lat = half_l * cos_a, half_l * sin_a
+            painter.setPen(QPen(colour, line_width))
+            painter.drawLine(centre, QPointF(
+                centre.x() + self.metres_to_pixels_x(nose_lat),
+                centre.y() - self.metres_to_pixels_y(nose_long)))
+
     def _draw_objects_of_interest(self, painter):
         if self.static_obj:
             self._draw_ooi(painter, self.static_obj, self.c('static_ooi'), "STATIC", square=True)
@@ -526,23 +622,46 @@ class RadarPlotWidget(QWidget):
         centre = QPointF(self.to_pixel_x(lateral), self.to_pixel_y(range_m))
 
         glow = QColor(colour)
-        glow.setAlpha(45)
+        glow.setAlpha(38)
         painter.setPen(Qt.NoPen)
         painter.setBrush(QBrush(glow))
-        painter.drawEllipse(centre, 19, 19)
+        painter.drawEllipse(centre, 21, 21)
 
+        heading, _ = self.object_heading(obj['vx'], obj['vy'])
+        length, width = self.object_footprint(lateral, range_m)
+        self._draw_oriented_box(painter, centre, length, width, heading,
+                                colour, fill_alpha=60, line_width=2.0)
+
+        painter.setPen(Qt.NoPen)
         painter.setBrush(QBrush(colour))
-        painter.setPen(QPen(self.c('marker_edge'), 1.2))
-        if square:
-            painter.drawRect(QRectF(centre.x() - 6, centre.y() - 6, 12, 12))
-        else:
-            painter.drawEllipse(centre, 6.5, 6.5)
+        painter.drawEllipse(centre, 2.6, 2.6)
 
-        if not square:
-            self._draw_velocity_arrow(painter, centre, obj['vy'], obj['vx'], colour)
+        self._draw_velocity_arrow(painter, centre, obj['vy'], obj['vx'], colour)
 
-        label = f"{tag}  {range_m:.1f} m / {lateral:+.1f} m"
-        self._draw_label(painter, label, centre.x() + 12, centre.y() + 8, colour)
+        label = f"{tag}  {range_m:.1f} / {lateral:+.1f} m"
+        self._draw_label(painter, label, centre.x() + 14, centre.y() + 10, colour)
+
+    def object_footprint(self, lateral, range_m, max_gap_m=3.0):
+        """Length and width from the nearest cluster's extent, else a default.
+
+        The radar sends no object dimensions, so a cluster sitting on top of the
+        object is the only size evidence available.
+        """
+        best, best_gap = None, max_gap_m
+        for cluster in self.clusters:
+            try:
+                gap = math.hypot(float(cluster.get('C_X', 0.0)) - lateral,
+                                 float(cluster.get('C_Y', 0.0)) - range_m)
+            except (TypeError, ValueError):
+                continue
+            if gap < best_gap:
+                best, best_gap = cluster, gap
+
+        if best is None:
+            return self.DEFAULT_LENGTH_M, self.DEFAULT_WIDTH_M
+        length = float(best.get('C_SY', 0.0) or 0.0) or self.DEFAULT_LENGTH_M
+        width = float(best.get('C_SX', 0.0) or 0.0) or self.DEFAULT_WIDTH_M
+        return max(length, 1.0), max(width, 0.6)
 
     def _draw_label(self, painter, text, x, y, colour):
         painter.setFont(QFont("Helvetica Neue", 8, QFont.DemiBold))
@@ -624,9 +743,8 @@ class RadarPlotWidget(QWidget):
             return
         factor = 0.9 ** steps
         self.max_range = max(20.0, min(300.0, self.max_range * factor))
-        self.half_width = max(6.0, min(80.0, self.half_width * factor))
-        self.range_step = 10.0 if self.max_range <= 160 else 25.0
-        self.lateral_step = 6.0 if self.half_width <= 30 else 10.0
+        self.grid_step = 5.0 if self.max_range <= 60 else (
+            10.0 if self.max_range <= 160 else 25.0)
         self._grid_cache = None
         self.update()
 
@@ -679,6 +797,58 @@ class DataTableWidget(QFrame):
     def set_accent(self, colour):
         for item in self.table_items:
             item.setForeground(QBrush(colour))
+
+
+class AttributeCard(QFrame):
+    """Key/value readout for one object, in the order of the object spec.
+
+    Fields the radar does not transmit are shown as em-dashes rather than
+    omitted: a missing attribute is information, and hiding the row would make
+    the gap invisible.
+    """
+
+    def __init__(self, title, fields, parent=None):
+        super(AttributeCard, self).__init__(parent)
+        self.setObjectName("card")
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 8)
+        layout.setSpacing(0)
+
+        title_label = QLabel(title.upper())
+        title_label.setObjectName("cardTitle")
+        layout.addWidget(title_label)
+
+        self.value_labels = {}
+        for key, caption in fields:
+            row = QWidget()
+            row_layout = QHBoxLayout()
+            row_layout.setContentsMargins(12, 1, 12, 1)
+            row_layout.setSpacing(6)
+            row.setLayout(row_layout)
+
+            name = QLabel(caption)
+            name.setObjectName("attrName")
+            value = QLabel("—")
+            value.setObjectName("attrValue")
+            value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+            row_layout.addWidget(name)
+            row_layout.addStretch()
+            row_layout.addWidget(value)
+            layout.addWidget(row)
+
+            self.value_labels[key] = value
+
+        self.setLayout(layout)
+
+    def update_values(self, values):
+        for key, label in self.value_labels.items():
+            value = values.get(key)
+            label.setText("—" if value in (None, "") else str(value))
+            label.setProperty("missing", "yes" if value in (None, "") else "no")
+            label.style().unpolish(label)
+            label.style().polish(label)
 
 
 class RadarVisualizerMainWindow(QMainWindow):
@@ -739,7 +909,7 @@ class RadarVisualizerMainWindow(QMainWindow):
         self.dynamic_alarm_table.set_accent(self.c('text_mid'))
         self.static_obj_table.set_accent(self.c('static_ooi'))
         self.dynamic_obj_table.set_accent(self.c('dynamic_ooi'))
-        for card in (self.counts_table, self.stream_table):
+        for card in (self.counts_table, self.stream_table, self.counts_reported):
             card.set_accent(self.c('text_bright'))
 
     # ── Layout ─────────────────────────────────────────────────────────────
@@ -840,10 +1010,26 @@ class RadarVisualizerMainWindow(QMainWindow):
             "Static alarm thresholds", ["L1 m", "L2 m", "L3 m"])
         self.dynamic_alarm_table = DataTableWidget(
             "Moving alarm thresholds", ["L1 m", "L2 m", "L3 m"])
+        self.counts_reported = DataTableWidget(
+            "Objects reported by radar", ["DYNAMIC", "STATIC"])
+        self.object_card = AttributeCard("Moving object of interest", [
+            ("objId", "objId"),
+            ("distX", "distX  (m)"),
+            ("distY", "distY  (m)"),
+            ("vrelX", "vrelX  (m/s)"),
+            ("vrelY", "vrelY  (m/s)"),
+            ("arelX", "arelX  (m/s²)"),
+            ("arelY", "arelY  (m/s²)"),
+            ("orientation", "orientation"),
+            ("dynamic_property", "dynamic_property"),
+            ("classification", "classification"),
+            ("size", "length × width (m)"),
+        ])
         self.stream_table = DataTableWidget("Stream", ["FRAMES", "FPS"])
 
-        for card in (self.counts_table, self.static_obj_table, self.dynamic_obj_table,
-                     self.static_alarm_table, self.dynamic_alarm_table, self.stream_table):
+        for card in (self.counts_table, self.counts_reported, self.object_card,
+                     self.static_obj_table, self.dynamic_alarm_table,
+                     self.stream_table):
             layout.addWidget(card)
 
         self._apply_table_accents()
@@ -933,6 +1119,13 @@ class RadarVisualizerMainWindow(QMainWindow):
                 self.format_value(dynamic_obj.get('Vy_val')),
             ])
 
+        counts = json_data.get('Object_counts') or {}
+        if counts:
+            self.counts_reported.update_data([
+                counts.get('dynamic', '—'), counts.get('static', '—')])
+
+        self._update_object_card(json_data.get('Dynamic_obj') or {})
+
         thresholds = json_data.get('Alarm_thresh') or {}
         if thresholds:
             self.static_alarm_table.update_data([
@@ -945,6 +1138,48 @@ class RadarVisualizerMainWindow(QMainWindow):
                 self.format_value(thresholds.get('Level_2_Mov'), 0),
                 self.format_value(thresholds.get('Level_3_Mov'), 0),
             ])
+
+    def _update_object_card(self, payload):
+        """Fill the attribute block, marking derived values as derived."""
+        if not payload:
+            return
+        plot = self.plot_widget
+        try:
+            dist_x = float(payload.get('x_val'))
+            dist_y = float(payload.get('y_val'))
+            vrel_x = float(payload.get('Vx_val'))
+            vrel_y = float(payload.get('Vy_val'))
+        except (TypeError, ValueError):
+            return
+
+        heading, basis = plot.object_heading(vrel_x, vrel_y)
+        if heading is None:
+            orientation = "—"
+        else:
+            suffix = "derived" if basis == "abs" else "derived, rel"
+            orientation = f"{math.degrees(heading):+.0f}°  ({suffix})"
+
+        length, width = plot.object_footprint(dist_y, dist_x)
+        from_cluster = any(
+            abs(float(c.get('C_X', 0)) - dist_y) < 3.0
+            and abs(float(c.get('C_Y', 0)) - dist_x) < 3.0
+            for c in plot.clusters)
+
+        self.object_card.update_values({
+            # Not transmitted by the radar - see the DBC; left blank on purpose
+            "objId": None,
+            "distX": f"{dist_x:.2f}",
+            "distY": f"{dist_y:.2f}",
+            "vrelX": f"{vrel_x:.2f}",
+            "vrelY": f"{vrel_y:.2f}",
+            "arelX": None,
+            "arelY": None,
+            "orientation": orientation,
+            "dynamic_property": plot.dynamic_property(vrel_x, vrel_y) + " (derived)",
+            "classification": None,
+            "size": (f"{length:.1f} × {width:.1f}  (cluster)" if from_cluster
+                     else f"{length:.1f} × {width:.1f}  (default)"),
+        })
 
     def refresh_status(self):
         """Clock, frame counter and measured frame rate."""
@@ -1026,6 +1261,9 @@ QTableWidget::item {{ padding: 2px; border: none; }}
 QHeaderView::section {{ background-color: transparent; color: {t['text_dim']};
                         border: none; font-size: 9px; font-weight: 700;
                         letter-spacing: 0.8px; padding: 0 0 2px 0; }}
+#attrName {{ font-size: 11px; color: {t['text_dim']}; }}
+#attrValue {{ font-size: 12px; font-weight: 600; color: {t['text_bright']}; }}
+#attrValue[missing="yes"] {{ color: {t['text_dim']}; font-weight: 400; }}
 QToolTip {{ background-color: {t['panel_bg']}; color: {t['text_bright']};
             border: 1px solid {t['panel_border']}; padding: 4px; }}
 QScrollBar:vertical, QScrollBar:horizontal {{ width: 0px; height: 0px; }}

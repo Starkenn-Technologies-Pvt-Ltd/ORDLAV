@@ -36,6 +36,11 @@ OR_MRR_TRACKERS = 0xD3
 OR_MRR_PADDING = 0xE1
 OR_FCWS_MOVING_OBJ = 0x510
 OR_FCWS_STATIC_OBJ = 0x590
+# Object counts reported by the radar (DBC: FCWS_Dynamic/Stationary_Object_Count).
+# These are how many objects the radar says it sees, which is what exposes an
+# object split - 0x510/0x590 only ever carry the single closest object.
+OR_FCWS_DYNAMIC_COUNT = 0x501
+OR_FCWS_STATIC_COUNT = 0x581
 OR_ALARM_STATUS = 0xA1
 OR_FCWS_THRESH = 0x6F1
 VEH_SPEED = 0x3F5
@@ -44,7 +49,7 @@ HIL_100 =0x100
 HIL_101 =0x101
 HIL_102 =0x102
 
-can_ids_to_filter = [OR_MRR_DATA_HEADER, OR_MRR_POINT_CLOUD, OR_MRR_TRACKERS, OR_MRR_CLUSTERS, OR_FCWS_STATIC_OBJ, OR_FCWS_MOVING_OBJ, OR_ALARM_STATUS, OR_FCWS_THRESH, VEH_SPEED, OR_ECU_ALARM, HIL_100, HIL_101]
+can_ids_to_filter = [OR_MRR_DATA_HEADER, OR_MRR_POINT_CLOUD, OR_MRR_TRACKERS, OR_MRR_CLUSTERS, OR_FCWS_STATIC_OBJ, OR_FCWS_MOVING_OBJ, OR_ALARM_STATUS, OR_FCWS_THRESH, VEH_SPEED, OR_ECU_ALARM, HIL_100, HIL_101, OR_FCWS_DYNAMIC_COUNT, OR_FCWS_STATIC_COUNT]
 
 FRAME_START_DATA = "02 01 04 03 06 05 08 07"  # Frame delimiter data pattern
 
@@ -98,11 +103,19 @@ class CANFrameProcessor:
 
         # CSV logging for parsed data (NEW)
         timestamp = datetime.now()
-        self.parsed_csv_filename = "parsed_" + timestamp.strftime('%H_%M_%m_%d_%Y.csv')
+        stamp = timestamp.strftime('%H_%M_%m_%d_%Y.csv')
+        self.parsed_csv_filename = "parsed_" + stamp
+        # Long-format companions: one row per frame, and one row per object per
+        # frame. The wide parsed CSV keeps its shape so existing consumers are
+        # unaffected, but it can only hold one object per category and stores
+        # point/cluster/track lists as unparseable repr() strings.
+        self.frames_csv_filename = "frames_" + stamp
+        self.objects_csv_filename = "objects_" + stamp
         self.parsed_data_queue = queue.Queue(maxsize=1000)
 
         # Initialize parsed CSV with headers
         self._initialize_parsed_csv()
+        self._initialize_long_format_csv()
 
         # Open log handles once: reopening per message costs more than the
         # rest of the collection loop at bench message rates.
@@ -110,6 +123,10 @@ class CANFrameProcessor:
         self._raw_csv_writer = None
         self._parsed_csv_handle = None
         self._parsed_csv_writer = None
+        self._frames_csv_handle = None
+        self._frames_csv_writer = None
+        self._objects_csv_handle = None
+        self._objects_csv_writer = None
         self._csv_lock = threading.Lock()
 
         # Performance statistics
@@ -171,6 +188,102 @@ class CANFrameProcessor:
 
         except Exception as e:
             print(f"❌ Error initializing parsed CSV: {e}")
+
+    # One row per frame.
+    FRAMES_COLUMNS = [
+        'frame_num', 'timestamp', 'ego_speed', 'alarm_type',
+        'thresh_l1_sta', 'thresh_l2_sta', 'thresh_l3_sta',
+        'thresh_l1_mov', 'thresh_l2_mov', 'thresh_l3_mov',
+        'n_dynamic_reported', 'n_static_reported',
+        'n_points', 'n_clusters', 'n_tracks',
+    ]
+
+    # One row per object per frame. Coordinates are normalised to the vehicle
+    # convention used throughout the project: distX longitudinal (ahead
+    # positive), distY lateral (right positive). The radar's TLV stream uses
+    # the opposite axis naming, so it is converted here rather than leaving
+    # every consumer to remember which source means what.
+    OBJECTS_COLUMNS = [
+        'frame_num', 'timestamp', 'source', 'obj_index',
+        'distX', 'distY', 'vrelX', 'vrelY',
+        'extentX', 'extentY', 'doppler', 'peak',
+    ]
+
+    def _initialize_long_format_csv(self):
+        """Create the long-format CSVs with their headers."""
+        try:
+            for filename, columns in ((self.frames_csv_filename, self.FRAMES_COLUMNS),
+                                      (self.objects_csv_filename, self.OBJECTS_COLUMNS)):
+                with open(filename, 'w', newline='') as csvfile:
+                    csv.writer(csvfile).writerow(columns)
+        except Exception as e:
+            print(f"❌ Error initializing long-format CSV: {e}")
+
+    @staticmethod
+    def _as_float(value):
+        """Values arrive as formatted strings; blank out anything unusable."""
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return ''
+
+    def _long_format_rows(self, frame_num, timestamp, data):
+        """Split one frame's result dict into a frame row and object rows."""
+        points = data.get('Point_cloud', {}).get('Detect_Points', []) or []
+        clusters = data.get('Cluster_obj', {}).get('Clusters', []) or []
+        tracks = data.get('Tracked_obj', {}).get('Track_Objects', []) or []
+        counts = data.get('Object_counts', {}) or {}
+        thresholds = data.get('Alarm_thresh', {}) or {}
+
+        frame_row = [
+            frame_num, timestamp,
+            self._as_float(data.get('ego_speed', {}).get('ego_speed')),
+            data.get('Alarm_status', {}).get('Alarm_type', ''),
+            thresholds.get('Level_1_Sta', ''), thresholds.get('Level_2_Sta', ''),
+            thresholds.get('Level_3_Sta', ''), thresholds.get('Level_1_Mov', ''),
+            thresholds.get('Level_2_Mov', ''), thresholds.get('Level_3_Mov', ''),
+            counts.get('dynamic', ''), counts.get('static', ''),
+            len(points), len(clusters), len(tracks),
+        ]
+
+        rows = []
+
+        def add(source, index, distX, distY, vrelX='', vrelY='',
+                extentX='', extentY='', doppler='', peak=''):
+            rows.append([frame_num, timestamp, source, index,
+                         distX, distY, vrelX, vrelY,
+                         extentX, extentY, doppler, peak])
+
+        # CAN objects already use distX/distY naming
+        for source, key in (('dynamic', 'Dynamic_obj'), ('static', 'Static_obj'),
+                            ('hil1', 'HIL_Target1'), ('hil2', 'HIL_Target2')):
+            payload = data.get(key) or {}
+            if payload:
+                add(source, 0,
+                    self._as_float(payload.get('x_val')),
+                    self._as_float(payload.get('y_val')),
+                    self._as_float(payload.get('Vx_val')),
+                    self._as_float(payload.get('Vy_val')))
+
+        # TLV sources: X is lateral and Y is range, so the axes swap here
+        for index, track in enumerate(tracks):
+            add('track', index,
+                self._as_float(track.get('T_Y')), self._as_float(track.get('T_X')),
+                self._as_float(track.get('T_Vy')), self._as_float(track.get('T_Vx')))
+
+        for index, cluster in enumerate(clusters):
+            add('cluster', index,
+                self._as_float(cluster.get('C_Y')), self._as_float(cluster.get('C_X')),
+                extentX=self._as_float(cluster.get('C_SY')),
+                extentY=self._as_float(cluster.get('C_SX')))
+
+        for index, point in enumerate(points):
+            add('point', index,
+                self._as_float(point.get('D_Y')), self._as_float(point.get('D_X')),
+                doppler=self._as_float(point.get('Doppler')),
+                peak=self._as_float(point.get('Peak')))
+
+        return frame_row, rows
 
     def setup_socket_server(self):
         """Setup socket server for visualizer communication"""
@@ -305,6 +418,19 @@ class CANFrameProcessor:
                     self._parsed_csv_handle = open(self.parsed_csv_filename, 'a', newline='')
                     self._parsed_csv_writer = csv.writer(self._parsed_csv_handle)
                 self._parsed_csv_writer.writerow(row_data)
+
+                # Long-format companions
+                if self._frames_csv_writer is None:
+                    self._frames_csv_handle = open(self.frames_csv_filename, 'a', newline='')
+                    self._frames_csv_writer = csv.writer(self._frames_csv_handle)
+                    self._objects_csv_handle = open(self.objects_csv_filename, 'a', newline='')
+                    self._objects_csv_writer = csv.writer(self._objects_csv_handle)
+
+                frame_row, object_rows = self._long_format_rows(
+                    frame_counter, timestamp, data)
+                self._frames_csv_writer.writerow(frame_row)
+                if object_rows:
+                    self._objects_csv_writer.writerows(object_rows)
 
                 with self.stats_lock:
                     self.parsed_logs_written += 1
@@ -520,7 +646,8 @@ class CANFrameProcessor:
             "Alarm_thresh": {},
             "Alarm_status": {},
             "Point_cloud": {},
-            "Tracked_obj": {}
+            "Tracked_obj": {},
+            "Object_counts": {}
         }
 
         try:
@@ -633,6 +760,16 @@ class CANFrameProcessor:
                             "Level_3_Mov": Level_3_Mov
                         }
 
+                elif can_id == '501':
+                    parsed_data = self.parse_object_count(data, '501')
+                    if parsed_data is not None:
+                        result["Object_counts"]["dynamic"] = parsed_data
+
+                elif can_id == '581':
+                    parsed_data = self.parse_object_count(data, '581')
+                    if parsed_data is not None:
+                        result["Object_counts"]["static"] = parsed_data
+
                 elif can_id == '1':
                     parsed_data = self.parse_0X001_Alarm_Info(data)
                     if parsed_data:
@@ -741,26 +878,44 @@ class CANFrameProcessor:
             print(f"Error parsing 3F5 {hex_string}: {e}")
             return None
 
+    # DBC: FCWS_Alarm_Distance_Thresh, 0.5 m per LSB, range 0..127.5 m
+    ALARM_THRESH_SCALE = 0.5
+
     def parse_0x6F1_Alarm_distance_Msg(self, hex_string):
-        """Alarm distance thresholds: 3 static levels, then 3 moving levels."""
+        """Alarm distance thresholds in metres: 3 static levels, then 3 moving.
+
+        Byte 3 is unused; the DBC places the moving levels at bytes 4-6.
+        """
         try:
             b = [int(token, 16) for token in hex_string.split()]
             if len(b) < 7:
                 raise ValueError("need 7 bytes")
-            return [b[0], b[1], b[2], b[4], b[5], b[6]]
+            return [round(b[i] * self.ALARM_THRESH_SCALE, 1)
+                    for i in (0, 1, 2, 4, 5, 6)]
         except Exception as e:
             print(f"Error parsing 6F1 {hex_string}: {e}")
             return None
 
     def parse_0X001_Alarm_Info(self, hex_string):
-        """Active alarm type."""
+        """Active alarm type. DBC: FCWS_Alarm is 2 bits, values 0-3."""
         try:
             b = [int(token, 16) for token in hex_string.split()]
             if not b:
                 raise ValueError("empty payload")
-            return b[0] & 0xFF
+            return b[0] & 0b11
         except Exception as e:
             print(f"Error parsing 001 {hex_string}: {e}")
+            return None
+
+    def parse_object_count(self, hex_string, label=""):
+        """Object count messages (0x501 / 0x581): a plain byte-0 count."""
+        try:
+            b = [int(token, 16) for token in hex_string.split()]
+            if not b:
+                raise ValueError("empty payload")
+            return b[0]
+        except Exception as e:
+            print(f"Error parsing {label} {hex_string}: {e}")
             return None
 
     # ------------------------------------------------------------------
@@ -994,7 +1149,8 @@ class CANFrameProcessor:
             self.socket_thread.join(timeout=3.0)
 
         # Flush and close log files
-        for handle in (self._raw_csv_handle, self._parsed_csv_handle):
+        for handle in (self._raw_csv_handle, self._parsed_csv_handle,
+                       self._frames_csv_handle, self._objects_csv_handle):
             if handle:
                 try:
                     handle.flush()
@@ -1003,6 +1159,8 @@ class CANFrameProcessor:
                     print(f"⚠️ Error closing log file: {e}")
         self._raw_csv_handle = self._raw_csv_writer = None
         self._parsed_csv_handle = self._parsed_csv_writer = None
+        self._frames_csv_handle = self._frames_csv_writer = None
+        self._objects_csv_handle = self._objects_csv_writer = None
 
         # Close connections
         if self.client_connection:
