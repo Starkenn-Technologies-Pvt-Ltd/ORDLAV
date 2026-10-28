@@ -10,6 +10,7 @@ Updated from original CAN_Logging.py to implement frame-based processing.
 """
 
 import can
+import collections
 import csv
 import threading
 import queue
@@ -102,39 +103,61 @@ class BusMonitor:
 
     # A group is called silent once nothing in it has arrived for this long.
     SILENT_AFTER_S = 2.0
+    # Rates are measured over a trailing window, so they report what the bus
+    # is doing now rather than a lifetime average that never recovers from a
+    # quiet patch.
+    WINDOW_S = 5.0
 
     def __init__(self):
-        self.counts = {}
-        self.last_seen = {}
         # Rates are measured on the bus clock, not the wall clock, so a log
         # replayed at 20x still reports the rates it was recorded at.
-        self.first_timestamp = None
+        self.arrivals = {}      # can_id -> deque of timestamps in the window
+        self.last_seen = {}
+        self.ever_seen = set()
         self.latest_timestamp = None
 
     def record(self, can_id, timestamp):
-        self.counts[can_id] = self.counts.get(can_id, 0) + 1
+        # A replay that loops sends the clock back to the start. Without
+        # noticing, the window would span a negative interval and the computed
+        # rates would run away.
+        if (self.latest_timestamp is not None
+                and timestamp < self.latest_timestamp - 1.0):
+            self.arrivals.clear()
+
+        window = self.arrivals.setdefault(can_id, collections.deque())
+        window.append(timestamp)
+        cutoff = timestamp - self.WINDOW_S
+        while window and window[0] < cutoff:
+            window.popleft()
+
         self.last_seen[can_id] = timestamp
-        if self.first_timestamp is None:
-            self.first_timestamp = timestamp
+        self.ever_seen.add(can_id)
         self.latest_timestamp = timestamp
+
+    def _rate(self, can_id, now):
+        window = self.arrivals.get(can_id)
+        if not window or len(window) < 2:
+            return 0.0
+        span = max(now - window[0], self.WINDOW_S * 0.2)
+        return len(window) / span
 
     def snapshot(self):
         """Per-group state: live with a rate, silent, or never seen at all."""
-        if self.first_timestamp is None:
+        if self.latest_timestamp is None:
             return {}
         now = self.latest_timestamp
-        elapsed = max(now - self.first_timestamp, 1e-6)
         out = {}
         for name, ids in MESSAGE_GROUPS.items():
-            total = sum(self.counts.get(i, 0) for i in ids)
-            if not total:
+            if not any(i in self.ever_seen for i in ids):
                 out[name] = {"state": "never"}
                 continue
             newest = max((self.last_seen.get(i, 0) for i in ids))
             age = now - newest
+            # The rate of the busiest message in the group, not their sum:
+            # four 20 Hz messages are a 20 Hz feed, not an 80 Hz one.
             out[name] = {
                 "state": "silent" if age > self.SILENT_AFTER_S else "live",
-                "hz": round(total / elapsed, 1),
+                "hz": round(max(self._rate(i, now) for i in ids), 1),
                 "age": round(age, 1),
             }
         return out
