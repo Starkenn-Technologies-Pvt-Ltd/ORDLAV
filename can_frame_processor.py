@@ -1514,6 +1514,9 @@ def parse_args(argv=None):
                         metavar="SECONDS",
                         help="Hold the source until the visualizer connects, "
                              "up to SECONDS (useful when replaying a log)")
+    parser.add_argument("--list-sources", action="store_true",
+                        help="Report what CAN hardware this machine can reach, "
+                             "probe the bench interface, and exit")
     parser.add_argument("--stats-interval", type=float, default=10.0,
                         help="Seconds between statistics lines (default: 10)")
     return parser.parse_args(argv)
@@ -1524,6 +1527,10 @@ def main(argv=None):
     Main function - replaces your original CAN logging loop
     """
     args = parse_args(argv)
+
+    if args.list_sources:
+        print(can_source.describe_available(args.channel, args.bitrate))
+        return
 
     print("=== CAN Frame Processor ===")
     print("High-performance CAN message collection with frame-based processing\n")

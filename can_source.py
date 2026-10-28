@@ -210,6 +210,91 @@ class CsvReplayBus:
         self.shutdown()
 
 
+def _explain_open_failure(error):
+    """Turn python-can's internal failure into something actionable.
+
+    A missing driver surfaces as a NameError for a canlib symbol that was
+    never bound, which says nothing useful to whoever is standing at the
+    bench.
+    """
+    text = f"{type(error).__name__}: {error}".lower()
+    if "canget" in text or "canlib" in text or isinstance(error, NameError):
+        return ("The Kvaser driver (canlib) is not installed or not loadable "
+                "on this machine. Kvaser supplies drivers for Windows and "
+                "Linux only - there is none for macOS.")
+    if "channel" in text:
+        return ("The driver loaded but that channel does not exist. Try "
+                "--channel 0 or 1, and check the device is plugged in.")
+    if "bitrate" in text or "param" in text:
+        return "The interface rejected the bitrate; confirm the bus speed."
+    return ("Check the device is connected, its drivers are installed, and "
+            "nothing else already has the channel open.")
+
+
+def describe_available(channel="0", bitrate=500000):
+    """Report what CAN hardware this machine can actually reach.
+
+    Answers "is the radar plugged in and visible to us" without starting a
+    capture, which otherwise means reading a wall of python-can import
+    warnings and guessing.
+    """
+    require_python_can()
+    lines = [f"python-can {getattr(can, '__version__', '?')} on {sys.platform}",
+             f"  {describe_can_package()}", ""]
+
+    try:
+        configs = can.detect_available_configs()
+    except Exception as e:
+        configs = []
+        lines.append(f"  interface detection failed: {e}")
+
+    real = [c for c in configs
+            if c.get("interface") not in ("virtual", "udp_multicast")]
+    lines.append("Detected interfaces:")
+    if configs:
+        for config in configs:
+            kind = "hardware" if config in real else "software only"
+            lines.append(f"  {config.get('interface'):<16} "
+                         f"channel {config.get('channel')}   ({kind})")
+    else:
+        lines.append("  none")
+
+    # Probe the bench interface directly: detection does not always list a
+    # device that will nonetheless open.
+    lines.append("")
+    lines.append(f"Opening 'kvaser' channel {channel} at {bitrate} bit/s:")
+    try:
+        bus = CanBus(interface="kvaser", channel=channel, bitrate=bitrate)
+    except Exception as e:
+        lines.append(f"  FAILED - {type(e).__name__}: {e}")
+        lines.append(f"  -> {_explain_open_failure(e)}")
+    else:
+        lines.append(f"  OK - {getattr(bus, 'channel_info', 'opened')}")
+        lines.append("  Listening 3 s for traffic...")
+        seen = {}
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            message = bus.recv(timeout=0.2)
+            if message is not None:
+                seen[message.arbitration_id] = seen.get(message.arbitration_id, 0) + 1
+        bus.shutdown()
+        if seen:
+            lines.append(f"  {sum(seen.values()):,} messages from "
+                         f"{len(seen)} IDs:")
+            for can_id, count in sorted(seen.items()):
+                lines.append(f"    0x{can_id:03X}  {count:,}")
+        else:
+            lines.append("  Bus opened but NO traffic in 3 s - the interface "
+                         "is present but the radar is not transmitting "
+                         "(check power, wiring and bitrate).")
+
+    if not real:
+        lines.append("")
+        lines.append("No CAN hardware detected. Replay a log instead: "
+                     "--source replay:<log.csv>")
+    return "\n".join(lines)
+
+
 def open_source(spec=None, channel="0", bitrate=500000, can_filters=None,
                 speed=1.0, loop=False):
     """Open a CAN source and return a Bus-like object.
