@@ -87,7 +87,8 @@ The processor takes its messages from `--source`:
 
 | Source | Use |
 |---|---|
-| `kvaser` | the real bench (Windows/Linux; default there) |
+| `kvaser` | the real bench via Kvaser's own driver (Windows/Linux; default there) |
+| `socketcan` | Linux in-kernel CAN. Bring the interface up first: `sudo ip link set can0 up type can bitrate 500000`, then `--source socketcan --channel can0` |
 | `virtual` | python-can in-process bus, no hardware (default on macOS) |
 | `replay:<file.csv>` | re-play a raw CAN log |
 | any python-can name | `socketcan`, `pcan`, `slcan`, … |

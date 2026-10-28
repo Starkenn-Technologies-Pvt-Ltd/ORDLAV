@@ -68,6 +68,10 @@ def require_python_can():
 # idle stretch does not stall the replay.
 MAX_REPLAY_GAP_S = 0.5
 
+# Backends that take their bus speed from the OS network interface rather than
+# from python-can.
+BITRATE_SET_ELSEWHERE = {"socketcan", "socketcand", "virtual"}
+
 # Fallback spacing when a log has unusable timestamps.
 DEFAULT_REPLAY_INTERVAL_S = 0.001
 
@@ -312,8 +316,15 @@ def open_source(spec=None, channel="0", bitrate=500000, can_filters=None,
                             can_filters=can_filters)
 
     kwargs = {"channel": channel, "interface": spec}
-    if spec != "virtual":
+    if spec not in BITRATE_SET_ELSEWHERE:
         kwargs["bitrate"] = bitrate
+    elif bitrate:
+        # SocketCAN takes its bitrate from the network interface, and quietly
+        # ignores one passed here - so say so rather than let --bitrate look
+        # like it did something.
+        print(f"ℹ️  '{spec}' takes its bitrate from the interface, not from "
+              f"--bitrate. Set it with:\n"
+              f"     sudo ip link set {channel} up type can bitrate {bitrate}")
     bus = CanBus(**kwargs)
     if can_filters:
         bus.set_filters(can_filters)
