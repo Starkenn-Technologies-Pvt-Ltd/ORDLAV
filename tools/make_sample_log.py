@@ -162,7 +162,8 @@ def build_radar_payload(frame_num, points, clusters, tracks):
     tlv3_body = struct.pack("<HH", len(tracks), Q_FORMAT)
     for x, y, vx, vy in tracks:
         tlv3_body += struct.pack("<hhhh", q(x), q(y), q(vx), q(vy))
-        tlv3_body += b"\x00" * 4  # spare the parser skips
+        # xSize / ySize, per the radar firmware's record walk
+        tlv3_body += struct.pack("<hh", q(1.8), q(4.5))
     tlv3 = struct.pack("<II", 3, len(tlv3_body)) + tlv3_body
 
     tlvs = tlv1 + tlv2 + tlv3

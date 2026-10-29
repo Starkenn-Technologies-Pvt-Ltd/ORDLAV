@@ -412,6 +412,8 @@ class CANFrameProcessor:
             add('track', index,
                 self._as_float(track.get('T_Y')), self._as_float(track.get('T_X')),
                 self._as_float(track.get('T_Vy')), self._as_float(track.get('T_Vx')),
+                extentX=self._as_float(track.get('T_SY')),
+                extentY=self._as_float(track.get('T_SX')),
                 assoc_id=track.get('T_ID', ''))
 
         for index, cluster in enumerate(clusters):
@@ -1211,7 +1213,10 @@ class CANFrameProcessor:
     TLV_HEADER_BYTES = 8
     POINT_RECORD_BYTES = 14     # doppler(2) peak(2) x(2) y(2) spare(6)
     CLUSTER_RECORD_BYTES = 8    # x(2) y(2) xSize(2) ySize(2)
-    TRACK_RECORD_BYTES = 12     # x(2) y(2) vx(2) vy(2) spare(4)
+    # Radar firmware walks this record as X, Y, Vx, Vy, Xsize, Ysize
+    # (wnc_source.c: "size of ( Y + Vx + Vy + Xsize + Xsize)"), so the
+    # last four bytes are the object's extent, not spare.
+    TRACK_RECORD_BYTES = 12     # x(2) y(2) vx(2) vy(2) xSize(2) ySize(2)
 
     TLV_POINT_CLOUD = 1
     TLV_CLUSTERS = 2
@@ -1359,6 +1364,9 @@ class CANFrameProcessor:
                 'T_Y': track_y,
                 'T_Vx': self._s16(buf, idx + 4) / scale,
                 'T_Vy': self._s16(buf, idx + 6) / scale,
+                # Extent, the only object size the radar produces
+                'T_SX': abs(self._s16(buf, idx + 8)) / scale,
+                'T_SY': abs(self._s16(buf, idx + 10)) / scale,
             })
             idx += self.TRACK_RECORD_BYTES
         return idx
