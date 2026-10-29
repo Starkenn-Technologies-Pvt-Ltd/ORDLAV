@@ -76,6 +76,19 @@ can_ids_to_filter = [
 # (0x0E1, 0x334-0x338, 0x500 on the bench unit) are evidence too.
 FRAME_IDS = frozenset(can_ids_to_filter)
 
+# J1939 CCVS, where the radar actually takes ego speed from (mss_main.c:821).
+# It is extended, so it never enters a frame; the latest value is carried into
+# each frame as ego_speed when no 0x3F5 is present.
+CCVS_ID = 0x18FEF111
+# A CCVS older than this, relative to the frame, is not reported as ego speed
+CCVS_MAX_AGE_S = 1.0
+
+
+def decode_ccvs(data):
+    """The firmware's decode: bytes 1-2, ~1/256 km/h per LSB, to m/s.
+    Kept identical to tools/inject_vehicle_data.decode_ccvs."""
+    return ((data[1] | (data[2] << 8)) * 0.00391) * 0.278
+
 FRAME_START_DATA = "02 01 04 03 06 05 08 07"  # Frame delimiter data pattern
 
 # Keepalive sent to the visualizer; a real message so it cannot corrupt a frame
@@ -211,6 +224,9 @@ class CANFrameProcessor:
         self.frame_queue = queue.Queue(maxsize=1000)
         self.current_frame = []  # Buffer for current frame being collected
         self.frame_active = False  # Whether we're currently collecting a frame
+
+        # Latest CCVS as (timestamp, m/s), written by the collection thread
+        self._ccvs = None
 
         # Thread control
         self.running = threading.Event()
@@ -695,6 +711,8 @@ class CANFrameProcessor:
                 if self.raw_log:
                     self.log_to_csv(timestamp, arbitration_id, dlc, data,
                                     is_extended)
+                if is_extended and arbitration_id == CCVS_ID and len(data) >= 3:
+                    self._ccvs = (timestamp, decode_ccvs(data))
                 if is_extended or arbitration_id not in FRAME_IDS:
                     continue
                 self.bus_monitor.record(arbitration_id, timestamp)
@@ -910,7 +928,8 @@ class CANFrameProcessor:
                 elif can_id == '3F5':
                     parsed_data = self.parse_3F5(data)
                     if parsed_data:
-                        result["ego_speed"] = {"ego_speed": parsed_data}
+                        result["ego_speed"] = {"ego_speed": parsed_data,
+                                               "source": "0x3F5"}
 
                 elif can_id == '3F7':
                     parsed_data = self.parse_yaw(data)
@@ -994,6 +1013,13 @@ class CANFrameProcessor:
             )
             for track, track_id in zip(Track_Objects, assigned):
                 track['T_ID'] = track_id
+
+            ccvs = self._ccvs
+            if (not result["ego_speed"] and ccvs is not None
+                    and (frame_timestamp is None
+                         or abs(frame_timestamp - ccvs[0]) <= CCVS_MAX_AGE_S)):
+                result["ego_speed"] = {"ego_speed": format(ccvs[1], '.2f'),
+                                       "source": "CCVS"}
 
             result["Bus"] = self.bus_monitor.snapshot()
             result["Point_cloud"] = {"Detect_Points": Detect_Points}

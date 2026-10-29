@@ -29,6 +29,8 @@ from PyQt5.QtWidgets import (QApplication, QFrame, QHBoxLayout, QHeaderView,
                              QTableWidget, QTableWidgetItem, QVBoxLayout,
                              QWidget)
 
+from scene_model import SceneModel, classify_track
+
 HOST = '127.0.0.1'   # CAN Processor IP
 PORT = 5001          # CAN Processor Port
 
@@ -47,6 +49,7 @@ THEMES = {
         'static_ooi': '#FF4D6D', 'dynamic_ooi': '#FF2D55', 'ego': '#2BD97C',
         'alarm_1': '#2BD97C', 'alarm_2': '#FFB020', 'alarm_3': '#FF3B30',
         'marker_edge': '#FFFFFF',
+        'coverage': '#2EC4A6', 'fov': '#8A9BB5', 'track_static': '#7D8BA3',
     },
     'light': {
         'bg_deep': '#EDF0F5', 'bg_plot': '#FFFFFF',
@@ -59,6 +62,7 @@ THEMES = {
         'static_ooi': '#C81E43', 'dynamic_ooi': '#D00A3C', 'ego': '#0E8A4C',
         'alarm_1': '#15803D', 'alarm_2': '#C2740A', 'alarm_3': '#DC2626',
         'marker_edge': '#1B2430',
+        'coverage': '#0E8F78', 'fov': '#5B6B85', 'track_static': '#6B778C',
     },
 }
 
@@ -84,6 +88,30 @@ def rgba(theme_name, role, alpha):
 
 ALARM_ROLES = ['alarm_1', 'alarm_2', 'alarm_3']
 ALARM_LABELS = ['L1', 'L2', 'L3']
+
+# Field of view drawn as the "nominal" fan. These are assumptions, not values
+# read from the radar: confirm them against the antenna and chirp design. The
+# coverage map beside it shows what the radar actually detected.
+NOMINAL_FOV_DEG = 60.0       # each side of boresight
+NOMINAL_RANGE_M = 120.0      # mrr_config_chirp_design_MRR120.h
+
+
+def class_role(item):
+    """Theme role for a classified point: closing / static / opening."""
+    if not item['moving']:
+        return 'point_still'
+    return 'point_near' if item['residual'] < 0 else 'point_away'
+
+
+def nice_ceiling(value, steps=(1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10)):
+    """Smallest 'round' number >= value, for axis limits."""
+    if value <= 0:
+        return 1.0
+    magnitude = 10 ** math.floor(math.log10(value))
+    for step in steps:
+        if step * magnitude >= value:
+            return step * magnitude
+    return 10 * magnitude
 
 
 class SocketClientThread(QThread):
@@ -163,7 +191,8 @@ class RadarPlotWidget(QWidget):
         # follows from the widget's aspect ratio so that both axes share one
         # metres-per-pixel scale. Without that, a rotated footprint shears and
         # headings read as the wrong angle.
-        self.max_range = 120.0
+        # The bench unit's detections stop near 60 m; scroll to zoom out.
+        self.max_range = 80.0
         self.grid_step = 10.0
 
         self.frame = {}
@@ -176,6 +205,8 @@ class RadarPlotWidget(QWidget):
         self.alarm_type = None
         self.ego_speed_mps = None
         self.object_counts = {}
+        # Classified points/tracks and coverage, owned by the main window
+        self.scene = None
 
         self._grid_cache = None
         self._grid_key = None
@@ -357,6 +388,8 @@ class RadarPlotWidget(QWidget):
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setClipRect(self.plot_rect())
 
+        self._draw_coverage(painter)
+        self._draw_fov(painter)
         self._draw_alarm_bands(painter)
         self._draw_boresight(painter)
         self._draw_clusters(painter)
@@ -407,6 +440,76 @@ class RadarPlotWidget(QWidget):
             painter.drawText(QRectF(rect.left() + 6, y - 14, 90, 13),
                              Qt.AlignLeft | Qt.AlignVCenter, f"{label}  {distance:g} m")
 
+    def _sector_path(self, r_lo, r_hi, az_lo, az_hi):
+        """Annular sector between two ranges and two azimuths (deg, +right).
+
+        Both axes share one metres-per-pixel scale, so circles stay circles.
+        Qt measures angles anticlockwise from 3 o'clock; boresight is 12.
+        """
+        origin = QPointF(self.to_pixel_x(0.0), self.to_pixel_y(0.0))
+        scale = self.scale()
+
+        def ring(radius_m):
+            r = radius_m * scale
+            return QRectF(origin.x() - r, origin.y() - r, 2 * r, 2 * r)
+
+        def at(radius_m, az):
+            a = math.radians(az)
+            return QPointF(self.to_pixel_x(radius_m * math.sin(a)),
+                           self.to_pixel_y(radius_m * math.cos(a)))
+
+        # arcTo joins the current point to the arc's start with a straight
+        # line, which draws the radial edges.
+        path = QPainterPath(at(r_lo, az_lo))
+        path.arcTo(ring(r_hi), 90.0 - az_lo, -(az_hi - az_lo))
+        if r_lo > 0:
+            path.arcTo(ring(r_lo), 90.0 - az_hi, az_hi - az_lo)
+        path.closeSubpath()
+        return path
+
+    def _draw_coverage(self, painter):
+        """Every cell the radar has detected something in, shaded by how often.
+
+        This is the area the radar actually covers on this mounting - built up
+        from its own detections, not taken from a datasheet.
+        """
+        if self.scene is None or not self.scene.coverage.total:
+            return
+        coverage = self.scene.coverage
+        log_peak = math.log1p(coverage.peak)
+        painter.setPen(Qt.NoPen)
+        for r_lo, r_hi, az_lo, az_hi, count in coverage.cells():
+            if r_lo > self.max_range:
+                continue
+            colour = QColor(self.c('coverage'))
+            colour.setAlpha(int(70 + 150 * math.log1p(count) / log_peak))
+            painter.setBrush(QBrush(colour))
+            painter.drawPath(self._sector_path(r_lo, r_hi, az_lo, az_hi))
+
+    def _draw_fov(self, painter):
+        """Nominal field of view (assumed) and the observed extent (measured)."""
+        painter.setBrush(Qt.NoBrush)
+        fov = NOMINAL_FOV_DEG
+        reach = min(NOMINAL_RANGE_M, self.max_range * 1.5)
+        painter.setPen(QPen(self.c('fov', 150), 1.2, Qt.DashLine))
+        painter.drawPath(self._sector_path(0.0, reach, -fov, fov))
+
+        extent = self.scene.coverage.observed_extent() if self.scene else None
+        if extent:
+            az_lo, az_hi, r_max = extent
+            painter.setPen(QPen(self.c('coverage', 220), 1.6))
+            painter.drawPath(self._sector_path(0.0, r_max, az_lo, az_hi))
+            tip = math.radians((az_lo + az_hi) / 2.0)
+            label_r = min(r_max, self.max_range * 0.92)
+            self._draw_label(
+                painter, f"seen {az_lo:+.0f}° to {az_hi:+.0f}°, {r_max:.0f} m",
+                self.to_pixel_x(label_r * math.sin(tip)) + 8,
+                self.to_pixel_y(label_r * math.cos(tip)), self.c('coverage'))
+
+        rect = self.plot_rect()
+        self._draw_label(painter, f"nominal ±{fov:.0f}° (assumed)",
+                         rect.left() + 8, rect.top() + 28, self.c('fov'))
+
     def _draw_boresight(self, painter):
         rect = self.plot_rect()
         x = self.to_pixel_x(0.0)
@@ -426,6 +529,17 @@ class RadarPlotWidget(QWidget):
 
     def _draw_points(self, painter):
         painter.setPen(Qt.NoPen)
+        if self.scene is not None:
+            # Coloured by motion over the ground, with ego speed removed
+            for point in self.scene.points:
+                if not self._in_view(point['lateral'], point['range']):
+                    continue
+                colour = QColor(self.c(class_role(point)))
+                colour.setAlpha(235)
+                painter.setBrush(QBrush(colour))
+                painter.drawEllipse(QPointF(self.to_pixel_x(point['lateral']),
+                                            self.to_pixel_y(point['range'])), 3.4, 3.4)
+            return
         for point in self.detected_points:
             try:
                 lateral = float(point.get('D_X', 0.0))
@@ -484,7 +598,11 @@ class RadarPlotWidget(QWidget):
 
             centre = QPointF(self.to_pixel_x(lateral), self.to_pixel_y(range_m))
 
-            halo = QColor(self.c('track'))
+            ego = self.scene.ego_mps if self.scene is not None else 0.0
+            ground, moving = classify_track(v_lateral, v_range, ego)
+            colour = self.c('track' if moving else 'track_static')
+
+            halo = QColor(colour)
             halo.setAlpha(38)
             painter.setPen(Qt.NoPen)
             painter.setBrush(QBrush(halo))
@@ -493,18 +611,18 @@ class RadarPlotWidget(QWidget):
             heading, _ = self.object_heading(v_range, v_lateral)
             length, width = self.object_footprint(lateral, range_m)
             self._draw_oriented_box(painter, centre, length, width, heading,
-                                    self.c('track'), fill_alpha=30, line_width=1.5)
-            painter.setBrush(QBrush(self.c('track')))
+                                    colour, fill_alpha=30, line_width=1.5)
+            painter.setBrush(QBrush(colour))
             painter.setPen(Qt.NoPen)
             painter.drawEllipse(centre, 2.4, 2.4)
 
-            self._draw_velocity_arrow(painter, centre, v_lateral, v_range, self.c('track'))
+            self._draw_velocity_arrow(painter, centre, v_lateral, v_range, colour)
 
-            speed = (v_lateral ** 2 + v_range ** 2) ** 0.5
             # Identity assigned by association, not reported by the radar
             track_id = track.get('T_ID', index + 1)
-            label = f"ID {track_id}  {range_m:.0f} m  {speed:.1f} m/s"
-            self._draw_label(painter, label, centre.x() + 13, centre.y() - 20, self.c('track'))
+            state = "MOVING" if moving else "STATIC"
+            label = f"ID {track_id} {state}  {range_m:.1f} m  {ground:.1f} m/s"
+            self._draw_label(painter, label, centre.x() + 13, centre.y() - 20, colour)
 
     # Seconds of travel the velocity arrow represents, and its pixel cap so a
     # fast closing target does not draw a line across the whole scene.
@@ -713,8 +831,9 @@ class RadarPlotWidget(QWidget):
             (self.c('point_near'), "closing"),
             (self.c('point_still'), "static"),
             (self.c('point_away'), "opening"),
-            (self.c('cluster'), "cluster"),
-            (self.c('track'), "track"),
+            (self.c('track'), "moving track"),
+            (self.c('track_static'), "static track"),
+            (self.c('coverage'), "area covered"),
             (self.c('dynamic_ooi'), "object of interest"),
         ]
         painter.setFont(QFont("Helvetica Neue", 8))
@@ -760,6 +879,140 @@ class RadarPlotWidget(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._grid_cache = None
+
+
+class ScatterPanel(QWidget):
+    """Range against Doppler or azimuth, drawn from the recent point history.
+
+    The radar sends a sparse point list over CAN, not the range-Doppler or
+    range-azimuth heatmap, so these panels plot detections rather than
+    intensity. Older frames fade so a moving target leaves a short trail.
+    """
+
+    MARGIN_LEFT = 40
+    MARGIN_RIGHT = 12
+    MARGIN_TOP = 28
+    MARGIN_BOTTOM = 32
+
+    def __init__(self, title, x_label, x_key, x_limit=None,
+                 theme=DEFAULT_THEME, parent=None):
+        super(ScatterPanel, self).__init__(parent)
+        self.setMinimumSize(260, 220)
+        self.title = title
+        self.x_label = x_label
+        self.x_key = x_key          # 'doppler' or 'azimuth'
+        self.fixed_x_limit = x_limit
+        self.theme = theme
+        self.scene = None
+        # Axis limits only grow, so the scale does not jump frame to frame
+        self.x_limit = x_limit or 3.0
+        self.range_limit = 20.0
+
+    def c(self, role, alpha=None):
+        return theme_colour(self.theme, role, alpha)
+
+    def set_theme(self, theme):
+        self.theme = theme
+        self.update()
+
+    def set_scene(self, scene):
+        self.scene = scene
+        for frame in scene.history:
+            for point in frame:
+                self.range_limit = max(self.range_limit,
+                                       nice_ceiling(point['radial'] * 1.05))
+                if self.fixed_x_limit is None:
+                    self.x_limit = max(self.x_limit,
+                                       nice_ceiling(abs(point[self.x_key]) * 1.2))
+        self.update()
+
+    def reset_scale(self):
+        self.x_limit = self.fixed_x_limit or 3.0
+        self.range_limit = 20.0
+        self.update()
+
+    def plot_rect(self):
+        return QRectF(self.MARGIN_LEFT, self.MARGIN_TOP,
+                      max(1, self.width() - self.MARGIN_LEFT - self.MARGIN_RIGHT),
+                      max(1, self.height() - self.MARGIN_TOP - self.MARGIN_BOTTOM))
+
+    def to_pixel(self, x_value, range_m):
+        rect = self.plot_rect()
+        px = rect.center().x() + (x_value / self.x_limit) * rect.width() / 2.0
+        py = rect.bottom() - (range_m / self.range_limit) * rect.height()
+        return QPointF(px, py)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), self.c('bg_deep'))
+        rect = self.plot_rect()
+        painter.fillRect(rect, self.c('bg_plot'))
+        painter.setFont(QFont("Helvetica Neue", 8))
+
+        # Grid: five range lines, and x ticks at quarters of the limit
+        for i in range(0, 5):
+            range_m = self.range_limit * i / 4.0
+            y = self.to_pixel(0, range_m).y()
+            painter.setPen(QPen(self.c('grid_minor'), 1))
+            painter.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
+            painter.setPen(QPen(self.c('text_dim')))
+            painter.drawText(QRectF(0, y - 8, self.MARGIN_LEFT - 5, 16),
+                             Qt.AlignRight | Qt.AlignVCenter, f"{range_m:g}")
+        for i in range(-2, 3):
+            x_value = self.x_limit * i / 2.0
+            x = self.to_pixel(x_value, 0).x()
+            painter.setPen(QPen(self.c('axis_line') if i == 0 else self.c('grid_minor'), 1))
+            painter.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()))
+            painter.setPen(QPen(self.c('text_dim')))
+            painter.drawText(QRectF(x - 25, rect.bottom() + 3, 50, 14),
+                             Qt.AlignCenter, f"{x_value:g}")
+
+        painter.setPen(QPen(self.c('panel_border'), 1))
+        painter.drawRect(rect)
+        painter.setPen(QPen(self.c('text_mid')))
+        painter.setFont(QFont("Helvetica Neue", 9, QFont.DemiBold))
+        painter.drawText(QRectF(rect.left(), 4, rect.width(), 18),
+                         Qt.AlignCenter, self.title.upper())
+        painter.setFont(QFont("Helvetica Neue", 8))
+        painter.setPen(QPen(self.c('text_dim')))
+        painter.drawText(QRectF(rect.left(), rect.bottom() + 16, rect.width(), 14),
+                         Qt.AlignCenter, self.x_label)
+        painter.drawText(QRectF(2, 4, self.MARGIN_LEFT, 18),
+                         Qt.AlignLeft | Qt.AlignVCenter, "m")
+
+        if self.scene is not None:
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setClipRect(rect)
+            self._draw_history(painter)
+            self._draw_tracks(painter)
+        painter.end()
+
+    def _draw_history(self, painter):
+        frames = list(self.scene.history)
+        painter.setPen(Qt.NoPen)
+        for age, frame in enumerate(reversed(frames)):
+            alpha = int(235 * (1.0 - age / max(len(frames), 1)) ** 1.5) + 20
+            radius = 3.4 if age == 0 else 2.4
+            for point in frame:
+                colour = QColor(self.c(class_role(point)))
+                colour.setAlpha(alpha)
+                painter.setBrush(QBrush(colour))
+                painter.drawEllipse(self.to_pixel(point[self.x_key], point['radial']),
+                                    radius, radius)
+
+    def _draw_tracks(self, painter):
+        painter.setBrush(Qt.NoBrush)
+        for track in self.scene.tracks:
+            if self.x_key == 'doppler':
+                # Radial component of the track's relative velocity
+                radial = max(track['radial'], 1e-6)
+                x_value = (track['v_lateral'] * track['lateral']
+                           + track['v_range'] * track['range']) / radial
+            else:
+                x_value = track['azimuth']
+            role = 'track' if track['moving'] else 'track_static'
+            painter.setPen(QPen(self.c(role), 1.6))
+            painter.drawEllipse(self.to_pixel(x_value, track['radial']), 7, 7)
 
 
 class DataTableWidget(QFrame):
@@ -904,7 +1157,7 @@ class RadarVisualizerMainWindow(QMainWindow):
     def __init__(self, theme=None):
         super(RadarVisualizerMainWindow, self).__init__()
         self.setWindowTitle("Orion Radar Visualizer")
-        self.setGeometry(100, 100, 1500, 880)
+        self.setGeometry(60, 60, 1760, 940)
 
         self.settings = QSettings("Starkenn", "OrionRadarVisualizer")
         stored = self.settings.value("theme", DEFAULT_THEME)
@@ -919,6 +1172,8 @@ class RadarVisualizerMainWindow(QMainWindow):
         # When each section last carried data, so a panel can say when the
         # value on it stopped being refreshed.
         self._last_seen = {}
+        # Classification, point history and coverage, shared by every view
+        self.scene = SceneModel()
 
         self.setup_ui()
 
@@ -947,18 +1202,29 @@ class RadarVisualizerMainWindow(QMainWindow):
 
         self.setStyleSheet(build_style_sheet(theme))
         self.plot_widget.set_theme(theme)
+        for panel in (self.doppler_panel, self.azimuth_panel):
+            panel.set_theme(theme)
         self.theme_button.setText("LIGHT" if theme == 'dark' else "DARK")
         self._apply_table_accents()
 
-        for widget in (self.connection_label, self.alarm_banner, self.theme_button):
+        for widget in (self.connection_label, self.alarm_banner, self.theme_button,
+                       self.reset_button):
             self._restyle(widget)
+
+    def reset_coverage(self):
+        """Forget the area covered so far, e.g. after moving the radar."""
+        self.scene.reset_coverage()
+        for panel in (self.doppler_panel, self.azimuth_panel):
+            panel.reset_scale()
+        self.plot_widget.update()
 
     def _apply_table_accents(self):
         self.static_alarm_table.set_accent(self.c('text_mid'))
         self.dynamic_alarm_table.set_accent(self.c('text_mid'))
         self.static_obj_table.set_accent(self.c('static_ooi'))
         self.dynamic_obj_table.set_accent(self.c('dynamic_ooi'))
-        for card in (self.counts_table, self.stream_table, self.counts_reported):
+        self.coverage_table.set_accent(self.c('coverage'))
+        for card in (self.class_table, self.stream_table, self.counts_reported):
             card.set_accent(self.c('text_bright'))
 
     # ── Layout ─────────────────────────────────────────────────────────────
@@ -982,7 +1248,25 @@ class RadarVisualizerMainWindow(QMainWindow):
         body.setLayout(body_layout)
         root.addWidget(body, 1)
 
+        # Range-Doppler and range-azimuth stacked to the left of the scene
+        left = QWidget()
+        left.setFixedWidth(340)
+        left_layout = QVBoxLayout()
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
+        left.setLayout(left_layout)
+        self.doppler_panel = ScatterPanel(
+            "Range - Doppler", "radial velocity (m/s, closing < 0)", 'doppler',
+            theme=self.theme)
+        self.azimuth_panel = ScatterPanel(
+            "Range - Azimuth", "azimuth (deg, right > 0)", 'azimuth',
+            x_limit=90.0, theme=self.theme)
+        left_layout.addWidget(self.doppler_panel, 1)
+        left_layout.addWidget(self.azimuth_panel, 1)
+        body_layout.addWidget(left)
+
         self.plot_widget = RadarPlotWidget(theme=self.theme)
+        self.plot_widget.scene = self.scene
         body_layout.addWidget(self.plot_widget, 1)
         body_layout.addWidget(self._build_side_panel())
 
@@ -1008,6 +1292,14 @@ class RadarVisualizerMainWindow(QMainWindow):
 
         layout.addStretch()
 
+        self.reset_button = QPushButton("RESET MAP")
+        self.reset_button.setObjectName("themeToggle")
+        self.reset_button.setCursor(Qt.PointingHandCursor)
+        self.reset_button.setFixedSize(104, 26)
+        self.reset_button.setToolTip("Clear the area-covered map and panel scales")
+        self.reset_button.clicked.connect(self.reset_coverage)
+        layout.addWidget(self.reset_button)
+
         self.theme_button = QPushButton("LIGHT" if self.theme == 'dark' else "DARK")
         self.theme_button.setObjectName("themeToggle")
         self.theme_button.setCursor(Qt.PointingHandCursor)
@@ -1032,11 +1324,11 @@ class RadarVisualizerMainWindow(QMainWindow):
         self.ego_speed_label = QLabel("—")
         self.ego_speed_label.setObjectName("egoSpeed")
         self.ego_speed_label.setAlignment(Qt.AlignRight | Qt.AlignBottom)
-        speed_caption = QLabel("EGO SPEED km/h")
-        speed_caption.setObjectName("caption")
-        speed_caption.setAlignment(Qt.AlignRight | Qt.AlignTop)
+        self.speed_caption = QLabel("EGO SPEED km/h")
+        self.speed_caption.setObjectName("caption")
+        self.speed_caption.setAlignment(Qt.AlignRight | Qt.AlignTop)
         speed_layout.addWidget(self.ego_speed_label)
-        speed_layout.addWidget(speed_caption)
+        speed_layout.addWidget(self.speed_caption)
         layout.addWidget(speed_box)
 
         return header
@@ -1050,7 +1342,10 @@ class RadarVisualizerMainWindow(QMainWindow):
         layout.setSpacing(10)
         panel.setLayout(layout)
 
-        self.counts_table = DataTableWidget("Scene", ["POINTS", "CLUSTERS", "TRACKS"])
+        self.class_table = DataTableWidget(
+            "Moving / static", ["MOV PTS", "STA PTS", "MOV TRK", "STA TRK"])
+        self.coverage_table = DataTableWidget(
+            "Area covered", ["AZ FROM°", "AZ TO°", "RANGE m"])
         self.static_obj_table = DataTableWidget(
             "Static object of interest", ["RANGE m", "LATERAL m"])
         self.dynamic_obj_table = DataTableWidget(
@@ -1100,8 +1395,8 @@ class RadarVisualizerMainWindow(QMainWindow):
         self.stream_table = DataTableWidget(
             "Stream", ["FRAMES", "FPS", "RADAR CYCLE"])
 
-        for card in (self.counts_table, self.counts_reported, self.object_card,
-                     self.raw_card, self.dynamic_alarm_table,
+        for card in (self.class_table, self.coverage_table, self.counts_reported,
+                     self.object_card, self.raw_card, self.dynamic_alarm_table,
                      self.bus_card, self.stream_table):
             layout.addWidget(card)
 
@@ -1140,7 +1435,10 @@ class RadarVisualizerMainWindow(QMainWindow):
             self._frames_seen += 1
             self._frame_times.append(time.monotonic())
 
+            self.scene.update(json_data)
             self.plot_widget.update_data(json_data)
+            for panel in (self.doppler_panel, self.azimuth_panel):
+                panel.set_scene(self.scene)
             self._update_ego_speed(json_data)
             self._update_alarm(json_data)
             self._update_tables(json_data)
@@ -1155,6 +1453,9 @@ class RadarVisualizerMainWindow(QMainWindow):
             return  # keep the last known speed rather than blanking it
         if speed_mps >= 0:
             self.ego_speed_label.setText(f"{speed_mps * 3.6:.1f}")
+            source = (json_data.get('ego_speed') or {}).get('source')
+            self.speed_caption.setText(
+                f"EGO SPEED km/h · {source}" if source else "EGO SPEED km/h")
 
     def _update_alarm(self, json_data):
         status = json_data.get('Alarm_status') or {}
@@ -1173,9 +1474,14 @@ class RadarVisualizerMainWindow(QMainWindow):
         self._restyle(self.alarm_banner)
 
     def _update_tables(self, json_data):
-        plot = self.plot_widget
-        self.counts_table.update_data([
-            len(plot.detected_points), len(plot.clusters), len(plot.tracks)])
+        counts = self.scene.counts()
+        self.class_table.update_data([
+            counts['moving_points'], counts['static_points'],
+            counts['moving_tracks'], counts['static_tracks']])
+        extent = self.scene.coverage.observed_extent()
+        if extent:
+            self.coverage_table.update_data(
+                [f"{extent[0]:+.0f}", f"{extent[1]:+.0f}", f"{extent[2]:.0f}"])
 
         static_obj = json_data.get('Static_obj') or {}
         if static_obj:

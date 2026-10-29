@@ -134,11 +134,50 @@ Useful flags: `--speed` (replay rate; `0` = as fast as possible), `--loop`,
 
 ## The view
 
-The scene is drawn bird's-eye: range up the screen, lateral across, ego vehicle
-at the origin. Detected points are coloured by Doppler (closing / static /
-opening), clusters are drawn at their reported extent, tracks carry a velocity
-arrow showing where they travel next, and the moving-object alarm thresholds
-are shaded as L1/L2/L3 bands. Scroll the plot to zoom.
+Three views of the same detections:
+
+- **Cartesian** (centre) — bird's-eye: range up the screen, lateral across,
+  ego vehicle at the origin. Tracks carry a velocity arrow and a MOVING /
+  STATIC tag, and the moving-object alarm thresholds are shaded as L1/L2/L3
+  bands. Scroll to zoom.
+- **Range–Doppler** and **Range–Azimuth** (left) — the last 30 frames of
+  points, fading with age, with current tracks ringed.
+
+**Static vs moving** is judged over the ground. A stationary object seen from
+a vehicle doing *v* closes at *v*·cos(azimuth), so that is removed from each
+point's Doppler (and added back to each track's velocity) before comparing
+against 0.6 m/s. Ego speed comes from `0x3F5` if present, otherwise from CCVS
+(`0x18FEF111`); the header shows which. With neither, the radar is assumed
+stationary — right on a bench, wrong in a vehicle. Note that injecting CCVS on
+a bench where the radar is not actually moving makes everything read as
+moving, correctly: the injected speed says the radar is moving.
+
+**Area covered** is built from the radar's own detections: every range/azimuth
+cell it has reported something in is shaded by how often, and the green
+outline is the extent holding 98% of them. The dashed fan is the *assumed*
+nominal field of view (±60°, 120 m — `NOMINAL_FOV_DEG` / `NOMINAL_RANGE_M`),
+not a value the radar reports. **RESET MAP** clears it, e.g. after moving the
+radar.
+
+The radar sends a sparse point list over CAN, not the range-Doppler or
+range-azimuth heatmaps, so those panels plot detections rather than
+intensity. Object class labels (car / person / ...) are not available: the
+radar does not classify, and size alone is not a reliable stand-in.
+
+### Checking where an object really shows up
+
+To find out whether an object at a known distance is reported where it is,
+capture the bench twice — once empty, once with the object placed at a
+measured distance — and compare:
+
+```bash
+python tools/range_check.py empty/objects_*.csv placed/objects_*.csv --truth 1.0
+```
+
+For each layer (points, tracks, `0x510`, `0x590`) it reports how often the
+object is detected within 1 m of its true position, and every place that is
+occupied only when the object is present. Subtracting the empty scene removes
+walls, furniture and fixed multipath ghosts from the answer.
 
 Light and dark appearance are both supported — use the toggle in the header,
 or start in one explicitly:
