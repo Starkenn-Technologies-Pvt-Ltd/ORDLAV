@@ -158,6 +158,20 @@ ORDLAV.exe --theme light
 `--mode processor` runs headless capture only and `--mode visualizer` attaches
 to a processor running elsewhere; the default runs both.
 
+## Tests
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest tests -q
+```
+
+27 tests over the decoders, the TLV walk, identity association, replay timing
+and the bus monitor. Every decoding bug found during bring-up has a test
+here - threshold scaling, the two-bit alarm field, ego speed in m/s, track
+extent, the delimiter-only frame, and the bus-rate runaway on a looping
+replay - so none of them can come back silently. CI runs them before building
+the executable.
+
 ## Logs written
 
 Each run writes three CSVs alongside the raw CAN log:
