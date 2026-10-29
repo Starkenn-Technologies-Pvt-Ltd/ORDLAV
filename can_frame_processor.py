@@ -71,6 +71,11 @@ can_ids_to_filter = [
     OR_FCWS_DYNAMIC_COUNT, OR_FCWS_STATIC_COUNT,
 ]
 
+# Standard IDs the frame pipeline consumes. The raw log is NOT filtered to
+# these: injected CCVS (extended 0x18FEF111) and IDs nobody has decoded yet
+# (0x0E1, 0x334-0x338, 0x500 on the bench unit) are evidence too.
+FRAME_IDS = frozenset(can_ids_to_filter)
+
 FRAME_START_DATA = "02 01 04 03 06 05 08 07"  # Frame delimiter data pattern
 
 # Keepalive sent to the visualizer; a real message so it cannot corrupt a frame
@@ -599,12 +604,14 @@ class CANFrameProcessor:
     def setup_can_bus(self) -> bool:
         """Initialize CAN bus connection"""
         try:
-            filters = [{"can_id": can_id, "can_mask": 0xFFFFFFFF, "extended": False} for can_id in can_ids_to_filter]
+            # No hardware filter: everything on the bus goes to the raw log,
+            # and collect_can_messages narrows to FRAME_IDS after logging.
+            # see_local_tx puts injected CCVS from this PC in the log too.
             self.bus = can_source.open_source(
                 self.source,
                 channel=self.channel,
                 bitrate=self.bitrate,
-                can_filters=filters,
+                see_local_tx=True,
                 speed=self.replay_speed,
                 loop=self.replay_loop,
             )
@@ -674,17 +681,23 @@ class CANFrameProcessor:
                 # Update statistics
                 with self.stats_lock:
                     self.messages_received += 1
-                self.bus_monitor.record(message.arbitration_id, message.timestamp)
 
                 # Extract message fields
                 timestamp = message.timestamp
                 arbitration_id = message.arbitration_id
                 dlc = message.dlc
                 data = message.data
+                is_extended = bool(getattr(message, 'is_extended_id', False))
 
-                # Log all messages to CSV (as in original code)
+                # Log every message on the bus, then keep only what the frame
+                # pipeline decodes. An extended ID can share a number with a
+                # radar ID, so it never enters the pipeline.
                 if self.raw_log:
-                    self.log_to_csv(timestamp, arbitration_id, dlc, data)
+                    self.log_to_csv(timestamp, arbitration_id, dlc, data,
+                                    is_extended)
+                if is_extended or arbitration_id not in FRAME_IDS:
+                    continue
+                self.bus_monitor.record(arbitration_id, timestamp)
 
                 entry = {
                     'timestamp': timestamp,
@@ -721,13 +734,14 @@ class CANFrameProcessor:
     # batches rather than per row.
     RAW_FLUSH_EVERY = 200
 
-    def log_to_csv(self, timestamp: float, arbitration_id: int, dlc: int, data: bytes):
+    def log_to_csv(self, timestamp: float, arbitration_id: int, dlc: int, data: bytes,
+                   is_extended: bool = False):
         """Log CAN message to CSV file (preserves original logging functionality)"""
         try:
             if self._raw_csv_writer is None:
                 self._raw_csv_handle = open(self.csv_filename, 'a', newline='')
                 self._raw_csv_writer = csv.writer(self._raw_csv_handle)
-            arbitration_id_str = hex(arbitration_id).replace('0x','').upper()
+            arbitration_id_str = can_source.format_can_id(arbitration_id, is_extended)
             self._raw_csv_writer.writerow(
                 [timestamp, arbitration_id_str, dlc, self.format_can_data(data)])
             self._raw_rows_since_flush += 1

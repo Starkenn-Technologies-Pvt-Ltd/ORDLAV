@@ -133,6 +133,56 @@ def test_replay_filters_to_the_requested_ids(tmp_path):
     assert ids == [0x510]
 
 
+CCVS = "FF EE 27 FF FF FF FF FF"   # J1939 CCVS, 40 km/h
+
+
+def test_replay_keeps_extended_ids_apart_from_standard_ones(tmp_path):
+    log = tmp_path / "log.csv"
+    write_log(log, [
+        [1000.0, "510", 8, "00 00 00 00 00 00 00 00"],
+        [1000.01, "18FEF111", 8, CCVS],
+        [1000.02, "00000510", 8, "00 00 00 00 00 00 00 00"],
+    ])
+    seen = []
+    bus = CsvReplayBus(str(log), speed=0)
+    while (message := bus.recv(timeout=0.01)) is not None:
+        seen.append((message.arbitration_id, message.is_extended_id))
+    assert seen == [(0x510, False), (0x18FEF111, True), (0x510, True)]
+
+    # A standard-ID filter must not let the extended 0x510 through
+    bus = CsvReplayBus(str(log), speed=0,
+                       can_filters=[{"can_id": 0x510, "can_mask": 0x7FF}])
+    assert bus.recv(timeout=0.01).is_extended_id is False
+    assert bus.recv(timeout=0.01) is None
+
+
+def test_raw_log_keeps_every_id_but_frames_only_get_radar_ids(tmp_path, monkeypatch):
+    """Regression: the raw log used to drop injected CCVS and undecoded IDs,
+    so a capture could not show what was actually on the bus."""
+    source = tmp_path / "source.csv"
+    rows = [
+        [1000.00, "C1", 8, "02 01 04 03 06 05 08 07"],   # frame delimiter
+        [1000.01, "18FEF111", 8, CCVS],
+        [1000.02, "E1", 8, "00 00 00 00 00 00 00 00"],    # not decoded
+        [1000.03, "00000510", 8, "00 00 00 00 00 00 00 00"],
+        [1000.04, "510", 8, "00 00 00 00 00 00 00 00"],
+    ]
+    write_log(source, rows)
+    monkeypatch.chdir(tmp_path)
+    processor = CANFrameProcessor(csv_filename="raw.csv",
+                                  source="replay:%s" % source, replay_speed=0)
+    assert processor.setup_can_bus()
+    processor.collect_can_messages()
+    processor._raw_csv_handle.close()
+
+    with open(tmp_path / "raw.csv", newline="") as handle:
+        logged = [(row[1], row[3]) for row in csv.reader(handle)]
+    assert logged == [(row[1], row[3]) for row in rows]
+
+    frame = processor.frame_queue.get_nowait()
+    assert [entry["arbitration_id"] for entry in frame] == ["C1", "510"]
+
+
 def test_replay_reproduces_the_recorded_cadence(tmp_path):
     log = tmp_path / "log.csv"
     write_log(log, [[1000.0 + i * 0.01, "510", 8,

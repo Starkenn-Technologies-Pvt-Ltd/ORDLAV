@@ -92,11 +92,28 @@ def default_source():
     return "virtual"
 
 
+def format_can_id(arbitration_id, is_extended=False):
+    """CAN ID as written in the raw log: hex without 0x.
+
+    Extended (29-bit) IDs are zero-padded to eight digits, which is how they
+    are told apart on replay. Standard IDs keep the short form older logs used,
+    so those logs still read the same.
+    """
+    return "%08X" % arbitration_id if is_extended else "%X" % arbitration_id
+
+
+def parse_can_id(text):
+    """Inverse of format_can_id: (arbitration_id, is_extended)."""
+    text = text.strip()
+    return int(text, 16), len(text) == 8
+
+
 class CsvReplayBus:
     """Replays a raw CAN log CSV with the cadence it was recorded at.
 
     The log format is the one ``log_to_csv`` writes, with no header row:
     ``timestamp, arbitration_id (hex, no 0x), dlc, "AA BB CC ..."``.
+    Eight-digit IDs are extended (29-bit); see format_can_id.
     A header row is tolerated and skipped.
     """
 
@@ -110,7 +127,8 @@ class CsvReplayBus:
 
         allowed = None
         if can_filters:
-            allowed = {f["can_id"] for f in can_filters}
+            allowed = {(f["can_id"], bool(f.get("extended", False)))
+                       for f in can_filters}
 
         self._messages = self._load(path, allowed)
         if not self._messages:
@@ -153,13 +171,14 @@ class CsvReplayBus:
                 except ValueError:
                     continue  # header row or junk line
                 try:
-                    arbitration_id = int(row[1], 16)
+                    arbitration_id, is_extended = parse_can_id(row[1])
                     dlc = int(row[2])
                     data = bytes.fromhex(row[3].replace(" ", ""))
                 except ValueError:
                     skipped += 1
                     continue
-                if allowed is not None and arbitration_id not in allowed:
+                if (allowed is not None
+                        and (arbitration_id, is_extended) not in allowed):
                     continue
                 messages.append(
                     CanMessage(
@@ -167,7 +186,7 @@ class CsvReplayBus:
                         arbitration_id=arbitration_id,
                         dlc=dlc or len(data),
                         data=data,
-                        is_extended_id=False,
+                        is_extended_id=is_extended,
                         check=False,
                     )
                 )
@@ -302,8 +321,13 @@ def describe_available(channel="0", bitrate=500000):
 
 
 def open_source(spec=None, channel="0", bitrate=500000, can_filters=None,
-                speed=1.0, loop=False):
+                speed=1.0, loop=False, see_local_tx=False):
     """Open a CAN source and return a Bus-like object.
+
+    see_local_tx: also receive frames that other programs on this machine
+    transmit through the same adapter. Kvaser hides those by default, so a
+    logger would miss CCVS sent by tools/inject_vehicle_data.py even though
+    the radar receives it.
 
     Raises on failure so the caller can report it; never returns None.
     """
@@ -318,6 +342,10 @@ def open_source(spec=None, channel="0", bitrate=500000, can_filters=None,
                             can_filters=can_filters)
 
     kwargs = {"channel": channel, "interface": spec}
+    if see_local_tx and spec == "kvaser":
+        # python-can maps this onto canIOCTL_SET_LOCAL_TXECHO; without it,
+        # frames sent from another handle on the channel never arrive here.
+        kwargs["receive_own_messages"] = True
     if spec not in NO_BITRATE:
         kwargs["bitrate"] = bitrate
     elif bitrate and spec in BITRATE_SET_ELSEWHERE:
