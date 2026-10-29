@@ -133,3 +133,29 @@ def test_raw_counts_reproduce_the_metre_value(decoder):
     raw = decoder.object_raw_counts(as_hex(payload))
     x_val = float(decoder.parse_object_signal(as_hex(payload))[0])
     assert 0.032 * raw["x_raw"] - 60.8 == pytest.approx(x_val, abs=1e-9)
+
+
+# ------------------------------------------------------------ CCVS injection
+
+def test_ccvs_encoding_matches_the_firmware_decode():
+    """The radar reads ego speed from J1939 CCVS 0x18FEF111, not 0x3F5.
+
+    mss_main.c:821 computes
+        g_f_veh_speed = ((rxData[1] | (rxData[2] << 8)) * 0.00391) * 0.278
+    so what we inject must survive exactly that arithmetic.
+    """
+    from inject_vehicle_data import CCVS_ID, decode_ccvs, encode_ccvs
+
+    assert CCVS_ID == 0x18FEF111
+    for speed_mps in (0.0, 5.0, 11.1, 22.2, 27.8):
+        frame = encode_ccvs(speed_mps)
+        assert len(frame) == 8
+        assert decode_ccvs(frame) == pytest.approx(speed_mps, abs=0.01)
+
+
+def test_ccvs_speed_lives_in_bytes_one_and_two():
+    """SPN 84 occupies bytes 1-2; byte 0 and 3-7 must not carry speed."""
+    from inject_vehicle_data import encode_ccvs
+    slow, fast = encode_ccvs(5.0), encode_ccvs(25.0)
+    assert slow[1:3] != fast[1:3]
+    assert slow[0] == fast[0] and slow[3:] == fast[3:]

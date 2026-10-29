@@ -62,6 +62,25 @@ In the commands below, substitute your interpreter —
 `.\.venv\Scripts\python.exe` on Windows, `~/.venvs/ordlav/bin/python` on
 macOS — wherever `python` appears.
 
+## Feeding the radar ego speed
+
+The radar takes ego speed from **J1939 CCVS on extended ID `0x18FEF111`**, not
+from `0x3F5`. Both DBCs document `0x3F5`, but the firmware's handler for it is
+commented out (`mss_main.c:810`) and `g_f_veh_speed` is written only from the
+CCVS case at `mss_main.c:821`.
+
+Without it the radar degenerates: relative velocity is reported as `-ego`
+(zero), every object classifies as stationary, all six alarm thresholds stay
+zero, and time-to-collision divides by zero. A bench with no vehicle attached
+must inject CCVS:
+
+```bash
+python tools/inject_vehicle_data.py --speed 40 --units kmh
+```
+
+Add `--yaw` to also send `0x3F7`, `--ramp 0:20 --duration 60` to sweep speed,
+or `--dry-run` to print the frame without sending it.
+
 ## Running without the radar bench
 
 A laptop has no Kvaser interface, so the default source cannot open. Replay a

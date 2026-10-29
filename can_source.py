@@ -69,8 +69,10 @@ def require_python_can():
 MAX_REPLAY_GAP_S = 0.5
 
 # Backends that take their bus speed from the OS network interface rather than
-# from python-can.
-BITRATE_SET_ELSEWHERE = {"socketcan", "socketcand", "virtual"}
+# from python-can, and for which the ip link command is the right advice.
+BITRATE_SET_ELSEWHERE = {"socketcan", "socketcand"}
+# The virtual bus has no bitrate at all; it just must not be passed one.
+NO_BITRATE = BITRATE_SET_ELSEWHERE | {"virtual"}
 
 # Fallback spacing when a log has unusable timestamps.
 DEFAULT_REPLAY_INTERVAL_S = 0.001
@@ -316,9 +318,9 @@ def open_source(spec=None, channel="0", bitrate=500000, can_filters=None,
                             can_filters=can_filters)
 
     kwargs = {"channel": channel, "interface": spec}
-    if spec not in BITRATE_SET_ELSEWHERE:
+    if spec not in NO_BITRATE:
         kwargs["bitrate"] = bitrate
-    elif bitrate:
+    elif bitrate and spec in BITRATE_SET_ELSEWHERE:
         # SocketCAN takes its bitrate from the network interface, and quietly
         # ignores one passed here - so say so rather than let --bitrate look
         # like it did something.
